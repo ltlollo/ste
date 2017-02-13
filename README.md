@@ -5,3 +5,4 @@ TODO:
 - saving files
 - repeat changes
 - general cleanup (ex. undo)
+- xclipboard integration
