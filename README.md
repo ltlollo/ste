@@ -3,7 +3,5 @@ simple text editor
 
 TODO:
 - saving files
-- repeat changes
-- general cleanup (ex. undo)
+- general cleanup (ex. undo, repeat)
 - xclipboard integration
-- add correct limits to allocator size
