@@ -19,7 +19,7 @@
 #include <ncursesw/ncurses.h>
 
 #define TAB_SIZE 8
-#define SMALL_STR 20
+#define SMALL_STR 8
 #define INIT_DIFF 4096
 #define INIT_DOC 1024
 #define INIT_LINE 16
@@ -59,22 +59,24 @@ typedef wchar_t lchar_t;
 typedef int (*filt_fn_t)(lint_t);
 
 typedef enum DIFF_TYPE {
-    DIFF_TYPE_ADDCHR,
-    DIFF_TYPE_DELCHR_SMALL,
-    DIFF_TYPE_DELCHR,
-    // DIFF_TYPE_SUB,
     DIFF_TYPE_ADDBRK,
     DIFF_TYPE_DELBRK,
+    DIFF_TYPE_ADDCHR_SMALL,
+    DIFF_TYPE_DELCHR_SMALL,
+    DIFF_TYPE_INLINE = DIFF_TYPE_DELCHR_SMALL,
+    DIFF_TYPE_ADDCHR,
+    DIFF_TYPE_DELCHR,
+    // DIFF_TYPE_SUB,
 } DIFF_TYPE;
 
 typedef struct __attribute__((packed)) Diff {
-    struct {
+    struct __attribute__((packed)) {
         enum DIFF_TYPE type : 3;
         unsigned size : 29;
         int y;
         int x;
     };
-    union {
+    union __attribute__((packed)) {
         unsigned char content[SMALL_STR];
         lchar_t *data;
         filt_fn_t fil;
@@ -91,6 +93,7 @@ typedef struct Line {
 typedef struct DiffArr {
     long long size;
     long long alloc;
+    long long curr;
     Diff _Alignas(32) data[];
 } DiffArr;
 
@@ -107,6 +110,11 @@ typedef enum EFILE {
     EFILE_NOFILE
 } EFILE;
 
+typedef enum DIREC {
+    DIREC_FORW,
+    DIREC_BACK,
+} DIREC;
+
 typedef struct FileInfo { char *fname; } FileInfo;
 
 static int
@@ -120,7 +128,7 @@ static filt_fn_t filts[] = {
 };
 static struct FileInfo fileinfo = { NULL };
 static struct LineArr *doc = NULL;
-static struct DiffArr *vecdiff = NULL;
+static struct DiffArr *diffstk = NULL;
 static int cursx = 0;
 static int cursy = 0;
 static int framebeg = 0;
@@ -129,13 +137,14 @@ static int winy;
 static int pgspan;
 
 static int always(lint_t);
-static void reserve_vecdiff(void);
+static void diffstk_incr(void);
+static void reserve_diffstk(void);
 static void insert_addbrk(int, int);
 static void insert_delbrk(int, int);
-static void insert_addchr(lchar_t);
-static void insert_diff(struct Diff *, lchar_t);
-static void insert_delchr(lchar_t);
+static int eq_bigch(struct Diff *, enum DIFF_TYPE);
+static void insert_delta(lchar_t *, int);
 static void insert_doc(int, struct Line *, int);
+static void insert_doc_nl_times(int, int);
 static void insert_line(struct Line *, int, lchar_t *, int);
 static void merge_lines(int);
 static void remove_slice(struct Line *, int, int);
@@ -156,7 +165,9 @@ static int move_pgdown(void);
 static int move_down(void);
 static int move_down_natural(void);
 static int move_up_natural(void);
-int revert_diff(void);
+void diff_apply_brk(struct Diff *, enum DIREC);
+void diff_apply_chr(struct Diff *, enum DIREC);
+int diff_apply(enum DIREC);
 static int handle_input(lint_t);
 static int render_loop(void);
 
@@ -170,162 +181,148 @@ static void reposition_frame(void);
 static void render_lines(void);
 static void reposition_cursor(void);
 static enum EFILE load_file_utf8(const char *);
+int is_ascii(lchar_t *, int);
+static void insert_diff(struct Diff *, lchar_t *, int);
 
 static void
-reserve_vecdiff(void) {
-    if (vecdiff->size == vecdiff->alloc) {
-        xrealloc_arr(&vecdiff, vecdiff->alloc * 2 + 1);
-        vecdiff->alloc = vecdiff->alloc * 2 + 1;
+diffstk_incr(void) {
+    if (diffstk->curr < diffstk->size) {
+        for (int i = diffstk->curr; i < diffstk->size; ++i) {
+            if (diffstk->data[i].type > DIFF_TYPE_INLINE) {
+                free(diffstk->data[i].data);
+                diffstk->data[i].type = 0;
+            }
+        }
     }
+    diffstk->curr++;
+    diffstk->size = diffstk->curr;
+}
+
+static void
+reserve_diffstk(void) {
+    struct Diff *beg;
+    struct Diff *end;
+
+    if (diffstk->size == diffstk->alloc) {
+        xrealloc_arr(&diffstk, diffstk->alloc * 2 + 1);
+        diffstk->alloc = diffstk->alloc * 2 + 1;
+    }
+    beg = diffstk->data + diffstk->size;
+    end = diffstk->data + diffstk->alloc;
+    memset(beg, 0, (end - beg) * sizeof(*diffstk->data));
 }
 
 static void
 insert_addbrk(int y, int x) {
-    reserve_vecdiff();
-    long long pos = vecdiff->size;
-    struct Diff *curr = &vecdiff->data[pos];
-    struct Diff *prev = &vecdiff->data[pos - 1];
+    reserve_diffstk();
+    long long pos = diffstk->curr;
+    struct Diff *curr = diffstk->data + pos;
+    struct Diff *prev = diffstk->data + pos - 1;
 
     if (pos == 0 || prev->type != DIFF_TYPE_ADDBRK ||
         prev->size == MAX_DIFF_SIZE) {
+        diffstk_incr();
         curr->type = DIFF_TYPE_ADDBRK;
         curr->size = 1;
         curr->y = y;
         curr->x = x;
-        vecdiff->size++;
+    } else if (prev->y == cursy - prev->size && cursx == 0) {
+        prev->size++;
     } else {
-        if (prev->y == cursy - prev->size && cursx == 0) {
-            prev->size++;
-        } else {
-            curr->type = DIFF_TYPE_ADDBRK;
-            curr->size = 1;
-            curr->y = y;
-            curr->x = x;
-            vecdiff->size++;
-        }
+        diffstk_incr();
+        curr->type = DIFF_TYPE_ADDBRK;
+        curr->size = 1;
+        curr->y = y;
+        curr->x = x;
     }
 }
 
 static void
 insert_delbrk(int y, int x) {
-    reserve_vecdiff();
-    long long pos = vecdiff->size;
-    struct Diff *curr = &vecdiff->data[pos];
-    struct Diff *prev = &vecdiff->data[pos - 1];
+    reserve_diffstk();
+    long long pos = diffstk->curr;
+    struct Diff *curr = diffstk->data + pos;
+    struct Diff *prev = diffstk->data + pos - 1;
 
     if (pos == 0 || prev->type != DIFF_TYPE_DELBRK ||
         prev->size == MAX_DIFF_SIZE) {
+        diffstk_incr();
         curr->type = DIFF_TYPE_DELBRK;
         curr->size = 1;
         curr->y = y;
         curr->x = x;
-        vecdiff->size++;
+    } else if (prev->y == cursy + prev->size && prev->x == 0) {
+        prev->x = cursx;
+        prev->y--;
+        prev->size++;
     } else {
-        if (prev->y == cursy + prev->size && prev->x == 0) {
-            prev->x = cursx;
-            prev->y--;
-            prev->size++;
-        } else {
-            curr->type = DIFF_TYPE_DELBRK;
-            curr->size = 1;
-            curr->y = y;
-            curr->x = x;
-            vecdiff->size++;
-        }
-    }
-}
-
-static void
-insert_addchr(lchar_t ch) {
-    reserve_vecdiff();
-    long long pos = vecdiff->size;
-    struct Diff *curr = &vecdiff->data[pos];
-    struct Diff *prev = &vecdiff->data[pos - 1];
-    filt_fn_t curr_fil = find_match_fil(ch);
-    filt_fn_t prev_fil;
-
-    if (pos == 0 || prev->type != DIFF_TYPE_ADDCHR ||
-        prev->size == MAX_DIFF_SIZE) {
-        curr->type = DIFF_TYPE_ADDCHR;
+        diffstk_incr();
+        curr->type = DIFF_TYPE_DELBRK;
         curr->size = 1;
-        curr->x = cursx;
-        curr->y = cursy;
-        curr->fil = curr_fil;
-        vecdiff->size++;
+        curr->y = y;
+        curr->x = x;
+    }
+}
+
+static int
+eq_bigch(struct Diff *diff, enum DIFF_TYPE small) {
+    assert(small == DIFF_TYPE_DELCHR_SMALL || small == DIFF_TYPE_ADDCHR_SMALL);
+    if (small == DIFF_TYPE_DELCHR_SMALL) {
+        return diff->type == DIFF_TYPE_DELCHR ||
+               diff->type == DIFF_TYPE_DELCHR_SMALL;
     } else {
-        prev_fil = prev->fil;
-        if (prev->y == cursy && prev->x + prev->size == cursx &&
-            curr_fil == prev_fil) {
-            prev->size++;
-        } else {
-            curr->type = DIFF_TYPE_ADDCHR;
-            curr->size = 1;
-            curr->x = cursx;
-            curr->y = cursy;
-            curr->fil = curr_fil;
-            vecdiff->size++;
-        }
+        return diff->type == DIFF_TYPE_ADDCHR ||
+               diff->type == DIFF_TYPE_ADDCHR_SMALL;
     }
 }
 
 static void
-insert_diff(struct Diff *diff, lchar_t ch) {
-    lchar_t *own = NULL;
-    int size = diff->size;
-
-    if (diff->type == DIFF_TYPE_DELCHR) {
-        xrealloc_ptr(&diff->data, size + 1, sizeof(*diff->data), 0);
-        diff->data[size] = ch;
-    } else {
-        if ((ch >> 7) || diff->size == SMALL_STR) {
-            xrealloc_ptr(&own, size + 1, sizeof(*diff->data), 0);
-            for (int i = 0; i < size; ++i) {
-                own[i] = diff->content[i];
-            }
-            diff->data = own;
-            diff->data[size] = ch;
-            diff->type = DIFF_TYPE_DELCHR;
-        } else {
-            diff->content[size] = (unsigned char)ch;
-        }
-    }
-    diff->size++;
-}
-
-static void
-insert_delchr(lchar_t ch) {
-    reserve_vecdiff();
-    long long pos = vecdiff->size;
-    struct Diff *curr = &vecdiff->data[pos];
-    struct Diff *prev = &vecdiff->data[pos - 1];
-    filt_fn_t curr_fil = find_match_fil(ch);
+insert_delta(lchar_t *str, int delta) {
+    reserve_diffstk();
+    long long pos = diffstk->curr;
+    struct Diff *curr = diffstk->data + pos;
+    struct Diff *prev = diffstk->data + pos - 1;
+    enum DIFF_TYPE type;
+    lchar_t sample;
+    filt_fn_t curr_fil;
     filt_fn_t prev_fil;
 
-    if (pos == 0 ||
-        !(prev->type == DIFF_TYPE_DELCHR ||
-          prev->type == DIFF_TYPE_DELCHR_SMALL) ||
-        prev->size == MAX_DIFF_SIZE) {
-        curr->type = DIFF_TYPE_DELCHR_SMALL;
+    if (delta < 0) {
+        type = DIFF_TYPE_DELCHR_SMALL;
+        sample = str[-1];
+
+    } else {
+        type = DIFF_TYPE_ADDCHR_SMALL;
+        sample = str[0];
+    }
+    curr_fil = find_match_fil(sample);
+
+    if (pos == 0 || !eq_bigch(prev, type) || prev->size == MAX_DIFF_SIZE) {
+        diffstk_incr();
+        curr->type = type;
         curr->size = 0;
         curr->x = cursx;
         curr->y = cursy;
-        insert_diff(curr, ch);
-        vecdiff->size++;
+        insert_diff(curr, str, delta);
+        return;
+    }
+    if (prev->type == DIFF_TYPE_DELCHR_SMALL ||
+        prev->type == DIFF_TYPE_ADDCHR_SMALL) {
+        sample = prev->content[0];
     } else {
-        prev_fil = prev->type == DIFF_TYPE_DELCHR_SMALL
-                           ? find_match_fil(prev->content[0])
-                           : find_match_fil(prev->data[0]);
-        if (prev->y == cursy && prev->x - prev->size == cursx &&
-            curr_fil == prev_fil) {
-            insert_diff(prev, ch);
-        } else {
-            curr->type = DIFF_TYPE_DELCHR_SMALL;
-            curr->size = 0;
-            curr->x = cursx;
-            curr->y = cursy;
-            insert_diff(curr, ch);
-            vecdiff->size++;
-        }
+        sample = prev->data[0];
+    }
+    prev_fil = find_match_fil(sample);
+    if (prev->y == cursy && prev->x + prev->size == cursx &&
+        curr_fil == prev_fil) {
+        insert_diff(prev, str, delta);
+    } else {
+        diffstk_incr();
+        curr->type = type;
+        curr->size = 0;
+        curr->x = cursx;
+        curr->y = cursy;
+        insert_diff(curr, str, delta);
     }
 }
 
@@ -348,6 +345,27 @@ insert_doc(int pos, struct Line *cpy, int size) {
     memcpy(beg, cpy, size * sizeof(*doc->data));
     doc->size += size;
 }
+
+static void
+insert_doc_nl_times(int pos, int size) {
+    struct Line *beg;
+    struct Line *end;
+
+    assert(doc->size <= doc->alloc);
+    assert(pos <= doc->size);
+
+    if (doc->size + size > doc->alloc) {
+        xrealloc_arr(&doc, doc->alloc * 2 + size);
+        doc->alloc = doc->alloc * 2 + size;
+    }
+    beg = doc->data + pos;
+    end = doc->data + doc->size;
+
+    memmove(beg + size, beg, (end - beg) * sizeof(*doc->data));
+    memset(beg, 0, size * sizeof(*doc->data));
+    doc->size += size;
+}
+
 
 static void
 insert_line(struct Line *line, int pos, lchar_t *cpy, int size) {
@@ -391,24 +409,17 @@ merge_lines(int pos) {
 }
 
 static void
-remove_slice(struct Line *line, int pos, int size) {
+remove_slice(struct Line *line, int pos, int delta) {
     lchar_t *beg = line->data + pos;
-    lchar_t *next = line->data + pos + size;
+    lchar_t *prev = line->data + pos + delta;
     lchar_t *end = line->data + line->size;
 
-    assert(next <= end);
+    assert(beg <= end);
 
-    // OPT, also sucky API
-    cursx += size;
-    for (lchar_t *i = next - 1; i != beg - 1; --i) {
-        cursx--;
-        insert_delchr(*i);
-    }
+    insert_delta(beg, delta);
+    memmove(prev, beg, (end - beg) * sizeof(*line->data));
 
-    memmove(beg, next, (end - next) * sizeof(*line->data));
-
-
-    line->size -= size;
+    line->size += delta;
 }
 
 static filt_fn_t
@@ -455,7 +466,7 @@ realloc_ptr(void *p, size_t nmemb, size_t size, size_t head) {
     void **ptr = p;
     size_t nsize = nmemb * size;
 
-    if (SIZE_MAX - head < nsize && nmemb && size && SIZE_MAX / nmemb < size) {
+    if (INT_MAX - head < nsize && nmemb && size && INT_MAX / nmemb < size) {
         errno = ENOMEM;
         return -1;
     }
@@ -498,7 +509,7 @@ init_editor(const char *fname) {
     setlocale(LC_ALL, "");
 
     xrealloc_arr(&doc, INIT_DOC);
-    xrealloc_arr(&vecdiff, INIT_DIFF);
+    xrealloc_arr(&diffstk, INIT_DIFF);
 
     memset(doc, 0, sizeof(struct LineArr) + sizeof(*doc->data) * INIT_DOC);
     doc->alloc = INIT_DOC;
@@ -516,9 +527,9 @@ init_editor(const char *fname) {
     }
     fileinfo.fname = strdup(fname);
 
-    memset(vecdiff, 0, sizeof(DiffArr) + sizeof(*vecdiff->data) * INIT_DIFF);
-    vecdiff->alloc = INIT_DIFF;
-    vecdiff->size = 0;
+    memset(diffstk, 0, sizeof(DiffArr) + sizeof(*diffstk->data) * INIT_DIFF);
+    diffstk->alloc = INIT_DIFF;
+    diffstk->size = 0;
 
     open_win();
     atexit(close_win);
@@ -569,8 +580,8 @@ del_back(void) {
     } else {
 
         line = &doc->data[cursy];
+        remove_slice(line, cursx, -1);
         --cursx;
-        remove_slice(line, cursx, 1);
     }
     return 0;
 }
@@ -683,62 +694,55 @@ move_up_natural(void) {
     return 0;
 }
 
-int
-revert_diff(void) {
-    struct Diff *diff = &vecdiff->data[vecdiff->size - 1];
+void
+diff_apply_brk(struct Diff *diff, enum DIREC direc) {
+    struct Line *line;
     struct Line own = { 0, 0, 0 };
+
+    cursx = diff->x;
+    cursy = diff->y;
+    line = &doc->data[cursy];
+    if (((diff->type == DIFF_TYPE_ADDBRK) ^ (direc == DIREC_FORW)) == 0) {
+        assert(cursy >= 0);
+        for (int i = 0;i < diff->size; ++i) {
+            merge_lines(cursy);
+        }
+    } else {
+        assert(diff->size);
+        insert_line(&own, 0, line->data + cursx, line->size - cursx);
+        line->size = cursx;
+        insert_doc_nl_times(cursy + 1, diff->size - 1);
+        insert_doc(cursy + diff->size, &own, 1);
+        cursx = 0;
+        cursy += diff->size;
+    }
+}
+
+void
+diff_apply_chr(struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     lchar_t *beg;
+    lchar_t *to;
     lchar_t *end;
 
-    if (vecdiff->size == 0) {
-        return -1;
-    }
-    switch (diff->type) {
-    default:
-        vecdiff->size--;
-        return -1;
-    case DIFF_TYPE_ADDBRK:
-        cursx = 0;
-        cursy = diff->y + diff->size - 1;
-        assert(cursy >= 0);
-        line = &doc->data[cursy];
-        cursx = line->size;
-        merge_lines(cursy);
-        diff->size--;
-        if (diff->size == 0) {
-            vecdiff->size--;
-        }
-        break;
-    case DIFF_TYPE_ADDCHR:
-        cursx = diff->x;
-        cursy = diff->y;
-        line = &doc->data[cursy];
-        memmove(line->data + cursx, line->data + cursx + diff->size,
-                (line->size - diff->size - cursx) * sizeof(*line->data));
-        line->size -= diff->size;
-        vecdiff->size--;
-        break;
-    case DIFF_TYPE_DELBRK:
-        line = &doc->data[diff->y];
-        insert_line(&own, 0, line->data + diff->x, line->size - diff->x);
-        insert_doc(diff->y + 1, &own, 1);
-        line->size = diff->x;
-        diff->x = 0;
-        diff->y++;
-        cursx = diff->x;
-        cursy = diff->y;
-        diff->size--;
-        if (diff->size == 0) {
-            vecdiff->size--;
-        }
-        break;
-    case DIFF_TYPE_DELCHR:
-    case DIFF_TYPE_DELCHR_SMALL:
-        line = &doc->data[diff->y];
-        cursx = diff->x + 1;
-        cursy = diff->y;
+    cursx = diff->x;
+    cursy = diff->y;
+    line = &doc->data[cursy];
 
+    if ((eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL) ^ (direc == DIREC_FORW)) ==
+        0) {
+        if (direc == DIREC_FORW) {
+            to = line->data + cursx;
+            beg = line->data + cursx + diff->size;
+        } else {
+            to = line->data + cursx - diff->size;
+            beg = line->data + cursx;
+            cursx -= diff->size;
+        }
+        end = line->data + line->size;
+        memmove(to, beg, (end - beg) * sizeof(*line->data));
+        line->size -= diff->size;
+    } else {
         if (line->size + diff->size > line->alloc) {
             xrealloc_owndata(line, line->alloc * 2 + diff->size);
             line->alloc = line->alloc * 2 + diff->size;
@@ -748,27 +752,74 @@ revert_diff(void) {
 
         memmove(beg + diff->size, beg, (end - beg) * sizeof(*line->data));
         line->size += diff->size;
-        if (diff->type == DIFF_TYPE_DELCHR_SMALL) {
-            for (int i = diff->size; i; --i) {
-                beg[diff->size - i] = diff->content[i - 1];
+        if (direc == DIREC_FORW) {
+            if (diff->type <= DIFF_TYPE_INLINE) {
+                for (int i = diff->size; i; --i) {
+                    beg[diff->size - i] = diff->content[i - 1];
+                }
+            } else {
+                for (int i = diff->size; i; --i) {
+                    beg[diff->size - i] = diff->data[i - 1];
+                }
             }
         } else {
-            for (int i = diff->size; i; --i) {
-                beg[diff->size - i] = diff->data[i - 1];
+            if (diff->type <= DIFF_TYPE_INLINE) {
+                for (int i = 0; i < diff->size; ++i) {
+                    beg[diff->size + i] = diff->content[i];
+                }
+            } else {
+                for (int i = 0; i < diff->size; ++i) {
+                    beg[diff->size + i] = diff->data[i];
+                }
             }
-            free(diff->data);
+            cursx += diff->size;
         }
-        vecdiff->size--;
+    }
+}
+
+int
+diff_apply(enum DIREC direc) {
+    struct Diff *diff = diffstk->data + diffstk->curr - 1;
+    int err = 0;
+    int delta;
+
+    if (direc == DIREC_FORW) {
+        delta = -1;
+        diff = diffstk->data + diffstk->curr - 1;
+    } else {
+        delta = 1;
+        diff = diffstk->data + diffstk->curr;
+    }
+
+    if (direc == DIREC_FORW && diffstk->curr == 0) {
+        return -1;
+    } else if (direc == DIREC_BACK && diffstk->curr == diffstk->size) {
+        return -1;
+    }
+    switch (diff->type) {
+    default:
+        err = -1;
+        break;
+    case DIFF_TYPE_ADDBRK:
+    case DIFF_TYPE_DELBRK:
+        diff_apply_brk(diff, direc);
+        break;
+    case DIFF_TYPE_ADDCHR:
+    case DIFF_TYPE_ADDCHR_SMALL:
+    case DIFF_TYPE_DELCHR:
+    case DIFF_TYPE_DELCHR_SMALL:
+        diff_apply_chr(diff, direc);
         break;
     }
-    return 0;
+    diffstk->curr += delta;
+    return err;
 }
 
 static int
 handle_input(lint_t c) {
     struct Line own = { 0, 0, 0 };
     struct Line *line = &doc->data[cursy];
-    unsigned rest;
+    int rest;
     lchar_t ch = c;
 
     assert(cursy < doc->size);
@@ -846,15 +897,20 @@ handle_input(lint_t c) {
                 break;
             }
             line = &doc->data[cursy];
-            rest = cursx;
-            cursx = find_prev_simil(line->data, rest);
+            rest = find_prev_simil(line->data, cursx);
             remove_slice(line, cursx, rest - cursx);
+            cursx = rest;
             break;
         }
         break;
     case 21:
         if (strcmp(keyname(ch), "^U") == 0) {
-            revert_diff();
+            diff_apply(DIREC_FORW);
+        }
+        break;
+    case 18:
+        if (strcmp(keyname(ch), "^R") == 0) {
+            diff_apply(DIREC_BACK);
         }
         break;
     case KEY_BACKSPACE:
@@ -878,7 +934,7 @@ handle_input(lint_t c) {
         break;
     default:
         if (iswprint(ch) || ch == L'\t') {
-            insert_addchr(ch);
+            insert_delta(&ch, 1);
             insert_line(line, cursx, &ch, 1);
             cursx++;
         }
@@ -1185,3 +1241,80 @@ FAILREAD:
     fclose(file);
     return err;
 }
+
+int
+is_ascii(lchar_t *str, int size) {
+    lchar_t *end = str  + size;
+    while (str != end) {
+        unlikely_if_(*str >> 7) {
+            return 0;
+        }
+        str++;
+    }
+    return 1;
+}
+
+static void
+insert_diff(struct Diff *diff, lchar_t *str, int delta) {
+    lchar_t *own = NULL;
+    int size = diff->size;
+    int to_add;
+    lchar_t *beg;
+    lchar_t *end;
+
+    if (delta < 0) {
+        to_add = -delta;
+        beg = str - 1;
+        end = beg - to_add;
+
+        if (diff->type == DIFF_TYPE_DELCHR) {
+            xrealloc_ptr(&diff->data, size + to_add, sizeof(*diff->data), 0);
+            while (beg != end) {
+                diff->data[size] = *beg;
+                size++;
+                beg--;
+            }
+        } else if (!is_ascii(str, to_add) || size + to_add > SMALL_STR) {
+            xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
+            for (int i = 0; i < size; ++i) {
+                own[i] = diff->content[i];
+            }
+            diff->data = own;
+            while (beg != end) {
+                diff->data[size] = *beg;
+                size++;
+                beg--;
+            }
+            diff->type = DIFF_TYPE_DELCHR;
+        } else {
+            for (int i = size; i < to_add + size; ++i) {
+                diff->content[i] = (unsigned char)*beg;
+                beg--;
+            }
+        }
+    } else {
+        to_add = delta;
+        beg = str;
+        end = beg + to_add;
+
+        if (diff->type == DIFF_TYPE_ADDCHR) {
+            xrealloc_ptr(&diff->data, size + to_add, sizeof(*diff->data), 0);
+            memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
+        } else if (!is_ascii(str, to_add) || size + to_add > SMALL_STR) {
+            xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
+            for (int i = 0; i < size; ++i) {
+                own[i] = diff->content[i];
+            }
+            diff->data = own;
+            memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
+            diff->type = DIFF_TYPE_ADDCHR;
+        } else {
+            for (int i = size; i < to_add + size; ++i) {
+                diff->content[i] = (unsigned char)*beg;
+                beg++;
+            }
+        }
+    }
+    diff->size += to_add;
+}
+
