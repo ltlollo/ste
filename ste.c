@@ -118,6 +118,12 @@ typedef enum DIREC {
 typedef struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
+    int cursy;
+    int cursx;
+    int framebeg;
+    int winy;
+    int winx;
+    int pgspan;
 } Editor;
 
 typedef struct FileInfo { char *fname; } FileInfo;
@@ -1293,7 +1299,8 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
                 size++;
                 beg--;
             }
-        } else if (!is_ascii(str, to_add) || size + to_add > SMALL_STR) {
+        } else if (!is_ascii(str - to_add, to_add) ||
+                   size + to_add > SMALL_STR) {
             xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
             for (int i = 0; i < size; ++i) {
                 own[i] = diff->content[i];
