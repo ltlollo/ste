@@ -851,6 +851,12 @@ diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
     return err;
 }
 
+void
+save_current(struct LineArr *doc, struct FileInfo *info) {
+    save_file_utf8(doc, info->fname);
+    info->creat = 0;
+}
+
 static int
 handle_input(lint_t c) {
     struct Line own = { 0, 0, 0 };
@@ -954,6 +960,13 @@ handle_input(lint_t c) {
             //save_file_utf8(doc, "test_save");
         }
         break;
+    case 24:
+        if (strcmp(keyname(ch), "^X") == 0) {
+            save_current(doc, &fileinfo);
+            return 0;
+        }
+        break;
+
     case KEY_BACKSPACE:
         del_back();
         break;
