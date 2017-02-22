@@ -126,7 +126,10 @@ typedef struct Editor {
     int pgspan;
 } Editor;
 
-typedef struct FileInfo { char *fname; } FileInfo;
+typedef struct FileInfo {
+    char *fname;
+    int creat;
+} FileInfo;
 
 static int
 always(lint_t p) {
@@ -182,6 +185,7 @@ void diff_apply_chr(struct Diff *, enum DIREC);
 int diffstk_apply_last(struct DiffStk *, enum DIREC);
 static int handle_input(lint_t);
 static int render_loop(void);
+static void render_editor_info(void);
 
 static int count_render_width_upto(struct Line *, int);
 static lchar_t *render_max_given_width(lchar_t *, lchar_t *, int);
@@ -195,6 +199,7 @@ static void reposition_cursor(void);
 static enum EFILE load_file_utf8(const char *);
 int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
+static void save_file_utf8(struct LineArr *, const char *);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -519,12 +524,15 @@ static void
 open_win(void) {
     initscr();
     noecho();
-    cbreak();
+    raw();
     keypad(stdscr, TRUE);
     intrflush(stdscr, FALSE);
     set_tabsize(TAB_SIZE);
     winx = COLS;
     winy = LINES;
+    if (winy > 1) {
+        winy--;
+    }
     pgspan = winy / 4 * 3;
 }
 
@@ -549,7 +557,10 @@ init_editor(const char *fname) {
             err(1, "fopen '%s'", fname);
         } else {
             doc->size = 1;
+            fileinfo.creat = 1;
         }
+    } else {
+        fileinfo.creat = 0;
     }
     fileinfo.fname = strdup(fname);
 
@@ -938,6 +949,11 @@ handle_input(lint_t c) {
             diffstk_apply_last(diffstk, DIREC_BACK);
         }
         break;
+    case 19:
+        if (strcmp(keyname(ch), "^S") == 0) {
+            //save_file_utf8(doc, "test_save");
+        }
+        break;
     case KEY_BACKSPACE:
         del_back();
         break;
@@ -951,6 +967,9 @@ handle_input(lint_t c) {
         clear();
         winx = COLS;
         winy = LINES;
+        if (winy > 1) {
+            winy--;
+        }
         pgspan = winy / 4 * 3;
         reposition_frame();
         render_lines();
@@ -974,6 +993,7 @@ render_loop(void) {
 
     reposition_frame();
     clear();
+    render_editor_info();
     render_lines();
     reposition_cursor();
 
@@ -1162,6 +1182,20 @@ render_lines(void) {
 }
 
 static void
+render_editor_info(void) {
+    static char strbuf[128];
+
+    if (winy < 2) {
+        return;
+    }
+    snprintf(strbuf, 128, "filename: %s\t\t\t%d,%d\t%lld%%", fileinfo.fname,
+             cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
+
+    mvaddstr(winy, 0, strbuf);
+    move(0, 0);
+}
+
+static void
 reposition_cursor(void) {
     struct Line *line = doc->data + framebeg;
     int lines = 0;
@@ -1344,3 +1378,55 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
     diff->size += to_add;
 }
 
+static void
+save_file_utf8(struct LineArr *doc, const char *fname) {
+    unsigned char buf[4 * 4096 + 1];
+    FILE *fout = fopen(fname, "w");
+    struct Line *line = doc->data;
+    struct Line *line_end = doc->data + doc->size;
+
+    while (line != line_end) {
+        lchar_t *ch = line->data;
+        lchar_t *ch_end = line->data + line->size;
+        int i = 0;
+
+        while (ch != ch_end) {
+            likely_if_(*ch < 0x80) {
+                buf[i] = *ch;
+                i += 1;
+            }
+            else if (*ch < 0x800) {
+                buf[i + 0] = ((*ch >> 0x06) & 0x1f) | 0xc0;
+                buf[i + 1] = ((*ch >> 0x00) & 0x3f) | 0x80;
+                i += 2;
+            }
+            else if (*ch < 0x10000) {
+                buf[i + 0] = ((*ch >> 0x0c) & 0x0f) | 0xe0;
+                buf[i + 1] = ((*ch >> 0x06) & 0x3f) | 0x80;
+                buf[i + 2] = ((*ch >> 0x00) & 0x3f) | 0x80;
+                i += 3;
+            }
+            else if (*ch < 0x11000) {
+                buf[i + 0] = ((*ch >> 0x12) & 0x07) | 0xf0;
+                buf[i + 1] = ((*ch >> 0x0c) & 0x3f) | 0x80;
+                buf[i + 2] = ((*ch >> 0x06) & 0x3f) | 0x80;
+                buf[i + 3] = ((*ch >> 0x00) & 0x3f) | 0x80;
+                i += 4;
+            } else {
+                assert(0 && "unreacheable");
+            }
+            ch++;
+            unlikely_if_(i >= 4096) {
+                fwrite(buf, sizeof(*buf), i, fout);
+                i = 0;
+            }
+        }
+        likely_if_(line != line_end - 1) {
+            buf[i] = '\n';
+            i += 1;
+        }
+        fwrite(buf, sizeof(*buf), i, fout);
+        ++line;
+    }
+    fclose(fout);
+}
