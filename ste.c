@@ -180,9 +180,9 @@ static int move_pgdown(void);
 static int move_down(void);
 static int move_down_natural(void);
 static int move_up_natural(void);
-void diff_apply_brk(struct Diff *, enum DIREC);
-void diff_apply_chr(struct Diff *, enum DIREC);
-int diffstk_apply_last(struct DiffStk *, enum DIREC);
+static void diff_apply_brk(struct Diff *, enum DIREC);
+static void diff_apply_chr(struct Diff *, enum DIREC);
+static int diffstk_apply_last(struct DiffStk *, enum DIREC);
 static int handle_input(lint_t);
 static int render_loop(void);
 static void render_editor_info(void);
@@ -197,9 +197,9 @@ static void reposition_frame(void);
 static void render_lines(void);
 static void reposition_cursor(void);
 static enum EFILE load_file_utf8(const char *);
-int is_ascii(lchar_t *, int);
+static int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
-static void save_file_utf8(struct LineArr *, const char *);
+static void save_file_utf8(struct LineArr *, struct FileInfo *);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -730,7 +730,7 @@ move_up_natural(void) {
     return 0;
 }
 
-void
+static void
 diff_apply_brk(struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     struct Line own = { 0, 0, 0 };
@@ -754,7 +754,7 @@ diff_apply_brk(struct Diff *diff, enum DIREC direc) {
     }
 }
 
-void
+static void
 diff_apply_chr(struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     lchar_t *beg;
@@ -813,7 +813,7 @@ diff_apply_chr(struct Diff *diff, enum DIREC direc) {
     }
 }
 
-int
+static int
 diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
     struct Diff *diff = diffstk->data + diffstk->curr - 1;
     int err = 0;
@@ -851,11 +851,24 @@ diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
     return err;
 }
 
-void
+static void
 save_current(struct LineArr *doc, struct FileInfo *info) {
-    save_file_utf8(doc, info->fname);
-    info->creat = 0;
+    if (diffstk->curr == 0 && info->creat) {
+        return;
+    }
+    save_file_utf8(doc, info);
 }
+
+static void
+usr_quit(struct LineArr *doc, struct FileInfo *info) {
+    if (diffstk->curr == 0 && info->creat) {
+        return;
+    } else if (diffstk->size == 0) {
+        return;
+    }
+    save_file_utf8(doc, info);
+}
+
 
 static int
 handle_input(lint_t c) {
@@ -945,25 +958,38 @@ handle_input(lint_t c) {
             break;
         }
         break;
-    case 21:
-        if (strcmp(keyname(ch), "^U") == 0) {
-            diffstk_apply_last(diffstk, DIREC_FORW);
-        }
-        break;
+
     case 18:
         if (strcmp(keyname(ch), "^R") == 0) {
             diffstk_apply_last(diffstk, DIREC_BACK);
         }
         break;
+    case 21:
+        if (strcmp(keyname(ch), "^U") == 0) {
+            diffstk_apply_last(diffstk, DIREC_FORW);
+        }
+        break;
     case 19:
         if (strcmp(keyname(ch), "^S") == 0) {
-            //save_file_utf8(doc, "test_save");
+            save_file_utf8(doc, &fileinfo);
+        }
+        break;
+    case 17:
+        if (strcmp(keyname(ch), "^Q") == 0) {
         }
         break;
     case 24:
         if (strcmp(keyname(ch), "^X") == 0) {
             save_current(doc, &fileinfo);
             return 0;
+        }
+        break;
+    case 31:
+        if (strcmp(keyname(ch), "^/") == 0) {
+        }
+        break;
+    case 14:
+        if (strcmp(keyname(ch), "^N") == 0) {
         }
         break;
 
@@ -1314,7 +1340,7 @@ FAILREAD:
     return err;
 }
 
-int
+static int
 is_ascii(lchar_t *str, int size) {
     lchar_t *end = str + size;
     while (str != end) {
@@ -1392,7 +1418,8 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
 }
 
 static void
-save_file_utf8(struct LineArr *doc, const char *fname) {
+save_file_utf8(struct LineArr *doc, struct FileInfo *info) {
+    const char *fname = info->fname;
     unsigned char buf[4 * 4096 + 1];
     FILE *fout = fopen(fname, "w");
     struct Line *line = doc->data;
@@ -1434,12 +1461,11 @@ save_file_utf8(struct LineArr *doc, const char *fname) {
                 i = 0;
             }
         }
-        likely_if_(line != line_end - 1) {
-            buf[i] = '\n';
-            i += 1;
-        }
+        buf[i] = '\n';
+        i += 1;
         fwrite(buf, sizeof(*buf), i, fout);
         ++line;
     }
     fclose(fout);
+    info->creat = 0;
 }
