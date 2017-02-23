@@ -1004,7 +1004,7 @@ handle_input(lint_t c) {
         del_back();
         break;
     case KEY_RESIZE:
-        clear();
+        erase();
         winx = COLS;
         winy = LINES;
         if (winy > 1) {
@@ -1032,7 +1032,7 @@ render_loop(void) {
     lint_t ch;
 
     reposition_frame();
-    clear();
+    erase();
     render_lines();
     render_editor_info();
     reposition_cursor();
@@ -1230,8 +1230,8 @@ render_editor_info(void) {
     }
     msg = mkstr_nmt("filename: %s\t\t\t%d,%d\t%lld%%", fileinfo.fname,
                     cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
-
-    mvaddstr(winy, 0, msg);
+    move(winy, 0);
+    addstr(msg);
 }
 
 static void
@@ -1488,7 +1488,9 @@ usr_quit(void) {
     lint_t ch;
     if (diffstk->curr != curr_save_point) {
         msg = mkstr_nmt("Save changes to %s? (YNC):", fileinfo.fname);
-        mvaddstr(winy, 0, msg);
+        move(winy, 0);
+        clrtoeol();
+        addstr(msg);
         do {
             if (get_wch(&ch) == ERR) {
                 return 1;
