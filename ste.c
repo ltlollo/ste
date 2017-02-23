@@ -23,6 +23,7 @@
 #define INIT_DIFF 4096
 #define INIT_DOC 1024
 #define INIT_LINE 16
+#define SSTR_SIZE 128
 
 #define MAX_DIFF_SIZE 0x1fffffff
 
@@ -115,6 +116,12 @@ typedef enum DIREC {
     DIREC_BACK,
 } DIREC;
 
+typedef enum TERN {
+    TERN_Y,
+    TERN_N,
+    TERN_CANC,
+} TERN;
+
 typedef struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
@@ -128,7 +135,6 @@ typedef struct Editor {
 
 typedef struct FileInfo {
     char *fname;
-    int creat;
 } FileInfo;
 
 static int
@@ -141,6 +147,7 @@ static filt_fn_t filts[] = {
     iswalnum, iswpunct, iswspace, iswprint, always,
 };
 static struct FileInfo fileinfo = { NULL };
+static long long curr_save_point = 0;
 static struct LineArr *doc = NULL;
 static struct DiffStk *diffstk = NULL;
 static int cursx = 0;
@@ -150,8 +157,8 @@ static int winx;
 static int winy;
 static int pgspan;
 
-static int always(lint_t);
 
+static int always(lint_t);
 static void diffstk_incr(struct DiffStk *);
 static void diffstk_reserve(struct DiffStk *);
 static void diffstk_insert_addbk(struct DiffStk *, int, int);
@@ -183,23 +190,27 @@ static int move_up_natural(void);
 static void diff_apply_brk(struct Diff *, enum DIREC);
 static void diff_apply_chr(struct Diff *, enum DIREC);
 static int diffstk_apply_last(struct DiffStk *, enum DIREC);
+static void save_current(struct LineArr *, struct FileInfo *);
 static int handle_input(lint_t);
 static int render_loop(void);
-static void render_editor_info(void);
 
 static int count_render_width_upto(struct Line *, int);
-static lchar_t *render_max_given_width(lchar_t *, lchar_t *, int);
-static lchar_t *render_back_max_given_width(lchar_t *, lchar_t *, int);
+static lchar_t * render_max_given_width(lchar_t *, lchar_t *, int);
+static lchar_t * render_back_max_given_width(lchar_t *, lchar_t *, int);
 static int count_nlines_upto(struct Line *, int);
 static int count_nlines(struct Line *);
 static int count_lines(void);
 static void reposition_frame(void);
 static void render_lines(void);
+static void render_editor_info(void);
 static void reposition_cursor(void);
 static enum EFILE load_file_utf8(const char *);
 static int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
 static void save_file_utf8(struct LineArr *, struct FileInfo *);
+static char * mkstr_nmt(const char *, ...);
+static int usr_quit(void);
+
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -210,6 +221,9 @@ diffstk_incr(struct DiffStk *diffstk) {
                 diffstk->data[i].type = 0;
             }
         }
+    }
+    if (diffstk->curr < curr_save_point) {
+        curr_save_point = -1;
     }
     diffstk->curr++;
     diffstk->size = diffstk->curr;
@@ -557,10 +571,7 @@ init_editor(const char *fname) {
             err(1, "fopen '%s'", fname);
         } else {
             doc->size = 1;
-            fileinfo.creat = 1;
         }
-    } else {
-        fileinfo.creat = 0;
     }
     fileinfo.fname = strdup(fname);
 
@@ -853,22 +864,11 @@ diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
 
 static void
 save_current(struct LineArr *doc, struct FileInfo *info) {
-    if (diffstk->curr == 0 && info->creat) {
+    if (diffstk->curr == curr_save_point) {
         return;
     }
     save_file_utf8(doc, info);
 }
-
-static void
-usr_quit(struct LineArr *doc, struct FileInfo *info) {
-    if (diffstk->curr == 0 && info->creat) {
-        return;
-    } else if (diffstk->size == 0) {
-        return;
-    }
-    save_file_utf8(doc, info);
-}
-
 
 static int
 handle_input(lint_t c) {
@@ -971,11 +971,12 @@ handle_input(lint_t c) {
         break;
     case 19:
         if (strcmp(keyname(ch), "^S") == 0) {
-            save_file_utf8(doc, &fileinfo);
+            save_current(doc, &fileinfo);
         }
         break;
     case 17:
         if (strcmp(keyname(ch), "^Q") == 0) {
+            return usr_quit();
         }
         break;
     case 24:
@@ -1032,8 +1033,8 @@ render_loop(void) {
 
     reposition_frame();
     clear();
-    render_editor_info();
     render_lines();
+    render_editor_info();
     reposition_cursor();
 
     if (get_wch(&ch) == ERR) {
@@ -1222,16 +1223,15 @@ render_lines(void) {
 
 static void
 render_editor_info(void) {
-    static char strbuf[128];
+    static char *msg;
 
     if (winy < 2) {
         return;
     }
-    snprintf(strbuf, 128, "filename: %s\t\t\t%d,%d\t%lld%%", fileinfo.fname,
-             cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
+    msg = mkstr_nmt("filename: %s\t\t\t%d,%d\t%lld%%", fileinfo.fname,
+                    cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
 
-    mvaddstr(winy, 0, strbuf);
-    move(0, 0);
+    mvaddstr(winy, 0, msg);
 }
 
 static void
@@ -1467,5 +1467,48 @@ save_file_utf8(struct LineArr *doc, struct FileInfo *info) {
         ++line;
     }
     fclose(fout);
-    info->creat = 0;
+    curr_save_point = diffstk->curr;
+}
+
+static char *
+mkstr_nmt(const char *fmt, ...) {
+    static char strbuf[SSTR_SIZE];
+    va_list vl;
+
+    va_start(vl, fmt);
+
+    vsnprintf(strbuf, SSTR_SIZE, fmt, vl);
+
+    return strbuf;
+}
+
+static int
+usr_quit(void) {
+    const char *msg;
+    lint_t ch;
+    if (diffstk->curr != curr_save_point) {
+        msg = mkstr_nmt("Save changes to %s? (YNC):", fileinfo.fname);
+        mvaddstr(winy, 0, msg);
+        do {
+            if (get_wch(&ch) == ERR) {
+                return 1;
+            }
+        } while (ch != 'Y' && ch != 'N' && ch != 'C' && ch != 'y' &&
+                 ch != 'n' && ch != 'c');
+        switch(ch) {
+            default:
+                return 1;
+            case 'Y':
+            case 'y':
+                save_file_utf8(doc, &fileinfo);
+                return 0;
+            case 'N':
+            case 'n':
+                return 0;
+            case 'C':
+            case 'c':
+                return 1;
+        }
+    }
+    return 0;
 }
