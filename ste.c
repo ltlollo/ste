@@ -1,4 +1,4 @@
-// gcc self -g -O0 $(pkg-config --libs ncursesw) -o ste -pedantic -Wall -Wextra
+// gcc self -g -O0 $(pkg-config --libs ncursesw) -o ste -pedantic -Wall -Wextra -fopenmp
 
 #define _XOPEN_SOURCE 700
 #include <assert.h>
@@ -157,7 +157,6 @@ static int winx;
 static int winy;
 static int pgspan;
 
-
 static int always(lint_t);
 static void diffstk_incr(struct DiffStk *);
 static void diffstk_reserve(struct DiffStk *);
@@ -210,7 +209,7 @@ static void diff_insert_span(struct Diff *, lchar_t *, int);
 static void save_file_utf8(struct LineArr *, struct FileInfo *);
 static char * mkstr_nmt(const char *, ...);
 static int usr_quit(void);
-
+static int move_to_word(const lchar_t *str, long size);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -876,6 +875,7 @@ handle_input(lint_t c) {
     struct Line *line = &doc->data[cursy];
     int rest;
     lchar_t ch = c;
+    const char *key;
 
     assert(cursy < doc->size);
     assert(cursx <= line->size);
@@ -946,7 +946,8 @@ handle_input(lint_t c) {
     case KEY_CTRL_PGDOWN:
         break;
     case 23:
-        if (strcmp(keyname(ch), "^W") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^W") == 0) {
             if (cursx == 0) {
                 del_back();
                 break;
@@ -960,37 +961,44 @@ handle_input(lint_t c) {
         break;
 
     case 18:
-        if (strcmp(keyname(ch), "^R") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^R") == 0) {
             diffstk_apply_last(diffstk, DIREC_BACK);
         }
         break;
     case 21:
-        if (strcmp(keyname(ch), "^U") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^U") == 0) {
             diffstk_apply_last(diffstk, DIREC_FORW);
         }
         break;
     case 19:
-        if (strcmp(keyname(ch), "^S") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^S") == 0) {
             save_current(doc, &fileinfo);
         }
         break;
     case 17:
-        if (strcmp(keyname(ch), "^Q") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^Q") == 0) {
             return usr_quit();
         }
         break;
     case 24:
-        if (strcmp(keyname(ch), "^X") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^X") == 0) {
             save_current(doc, &fileinfo);
             return 0;
         }
         break;
     case 31:
-        if (strcmp(keyname(ch), "^/") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^_") == 0) {
         }
         break;
     case 14:
-        if (strcmp(keyname(ch), "^N") == 0) {
+        key = keyname(ch);
+        if (strcmp(key, "^N") == 0) {
         }
         break;
 
@@ -1480,6 +1488,45 @@ mkstr_nmt(const char *fmt, ...) {
     vsnprintf(strbuf, SSTR_SIZE, fmt, vl);
 
     return strbuf;
+}
+
+static int
+move_to_word(const lchar_t *str, long size) {
+    struct Line *line = doc->data + cursy;
+    lchar_t *cur = line->data + cursx + 1;
+    lchar_t *end = line->data + line->size - size + 1;
+
+    if (line->size - size + 1 > 0) {
+        for (; cur < end; cur++) {
+            if (*cur != *str) {
+                continue;
+            }
+            if (memcmp(cur, str, size * sizeof(*str)) == 0) {
+                cursx = cur - line->data;
+                return 0;
+            }
+        }
+    }
+    for (int i = 1; i < doc->size + 1; ++i) {
+        line = doc->data + (cursy + i) % doc->size;
+        cur = line->data;
+        end = line->data + line->size - size + 1;
+
+        if (line->size - size + 1 <= 0) {
+            continue;
+        }
+        for (; cur < end; cur++) {
+            if (*cur != *str) {
+                continue;
+            }
+            if (memcmp(cur, str, size * sizeof(*str)) == 0) {
+                cursy = line - doc->data;
+                cursx = cur - line->data;
+                return 0;
+            }
+        }
+    }
+    return -1;
 }
 
 static int
