@@ -5,5 +5,4 @@ TODO:
 - general cleanup (ex. undo, repeat)
 - xclipboard integration
 - ^A change current fileo
-- ^/, ^N Search
 - bulk replace

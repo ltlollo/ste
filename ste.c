@@ -147,6 +147,8 @@ static filt_fn_t filts[] = {
     iswalnum, iswpunct, iswspace, iswprint, always,
 };
 static struct FileInfo fileinfo = { NULL };
+static struct Line search_word = { 0, 0, 0 };
+static struct Line filename = {0, 0, 0 };
 static long long curr_save_point = 0;
 static struct LineArr *doc = NULL;
 static struct DiffStk *diffstk = NULL;
@@ -168,7 +170,7 @@ static void insert_doc(int, struct Line *, int);
 static void insert_doc_nl_times(int, int);
 static void line_insert(struct Line *, int, lchar_t *, int);
 static void merge_lines(int);
-static void line_remove_span(struct Line *, int, int);
+static void line_remove_span_qdiff(struct Line *, int, int);
 static filt_fn_t find_match_fil(lint_t);
 static int find_prev_simil(const void *, int);
 static int find_next_simil(const void *, int, int);
@@ -208,8 +210,11 @@ static int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
 static void save_file_utf8(struct LineArr *, struct FileInfo *);
 static char * mkstr_nmt(const char *, ...);
+static wchar_t *wmkstr_nmt(const wchar_t *, ...);
 static int usr_quit(void);
 static int move_to_word(const lchar_t *str, long size);
+static int line_ed(const char *, struct Line *);
+static void line_remove_span(struct Line *, int, int);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -459,11 +464,14 @@ line_remove_span(struct Line *line, int pos, int delta) {
     lchar_t *end = line->data + line->size;
 
     assert(beg <= end);
-
-    diffstk_insert_span(diffstk, beg, delta);
     memmove(prev, beg, (end - beg) * sizeof(*line->data));
-
     line->size += delta;
+}
+
+static void
+line_remove_span_qdiff(struct Line *line, int pos, int delta) {
+    diffstk_insert_span(diffstk, line->data + pos, delta);
+    line_remove_span(line, pos, delta);
 }
 
 static filt_fn_t
@@ -626,7 +634,7 @@ del_back(void) {
         diffstk_insert_delbk(diffstk, cursy, cursx);
     } else {
         line = &doc->data[cursy];
-        line_remove_span(line, cursx, -1);
+        line_remove_span_qdiff(line, cursx, -1);
         --cursx;
     }
     return 0;
@@ -954,7 +962,7 @@ handle_input(lint_t c) {
             }
             line = &doc->data[cursy];
             rest = find_prev_simil(line->data, cursx);
-            line_remove_span(line, cursx, rest - cursx);
+            line_remove_span_qdiff(line, cursx, rest - cursx);
             cursx = rest;
             break;
         }
@@ -994,11 +1002,18 @@ handle_input(lint_t c) {
     case 31:
         key = keyname(ch);
         if (strcmp(key, "^_") == 0) {
+            line_ed("search: ", &search_word);
+            if (search_word.size) {
+                move_to_word(search_word.data, search_word.size);
+            }
         }
         break;
     case 14:
         key = keyname(ch);
         if (strcmp(key, "^N") == 0) {
+            if (search_word.size) {
+                move_to_word(search_word.data, search_word.size);
+            }
         }
         break;
 
@@ -1231,15 +1246,22 @@ render_lines(void) {
 
 static void
 render_editor_info(void) {
-    static char *msg;
+    static wchar_t *msg;
 
     if (winy < 2) {
         return;
     }
-    msg = mkstr_nmt("filename: %s\t\t\t%d,%d\t%lld%%", fileinfo.fname,
-                    cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
+    msg = wmkstr_nmt(L"file: %s"
+                     "\t\t\t"
+                     "#: %.*ls"
+                     "\t\t\t"
+                     "%d,%d"
+                     "\t"
+                     "%lld%%",
+                     fileinfo.fname, search_word.size, search_word.data,
+                     cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
     move(winy, 0);
-    addstr(msg);
+    addwstr(msg);
 }
 
 static void
@@ -1490,6 +1512,16 @@ mkstr_nmt(const char *fmt, ...) {
     return strbuf;
 }
 
+static wchar_t *
+wmkstr_nmt(const wchar_t *fmt, ...) {
+    static wchar_t strbuf[SSTR_SIZE];
+    va_list vl;
+
+    va_start(vl, fmt);
+    vswprintf(strbuf, SSTR_SIZE, fmt, vl);
+    return strbuf;
+}
+
 static int
 move_to_word(const lchar_t *str, long size) {
     struct Line *line = doc->data + cursy;
@@ -1534,7 +1566,7 @@ usr_quit(void) {
     const char *msg;
     lint_t ch;
     if (diffstk->curr != curr_save_point) {
-        msg = mkstr_nmt("Save changes to %s? (YNC):", fileinfo.fname);
+        msg = mkstr_nmt("Save changes to %s? (ynC):", fileinfo.fname);
         move(winy, 0);
         clrtoeol();
         addstr(msg);
@@ -1544,20 +1576,76 @@ usr_quit(void) {
             }
         } while (ch != 'Y' && ch != 'N' && ch != 'C' && ch != 'y' &&
                  ch != 'n' && ch != 'c');
-        switch(ch) {
-            default:
-                return 1;
-            case 'Y':
-            case 'y':
-                save_file_utf8(doc, &fileinfo);
-                return 0;
-            case 'N':
-            case 'n':
-                return 0;
-            case 'C':
-            case 'c':
-                return 1;
+        switch (ch) {
+        case 'Y':
+        case 'y':
+            save_file_utf8(doc, &fileinfo);
+            return 0;
+        case 'N':
+        case 'n':
+            return 0;
+        default:
+        case 'C':
+        case 'c':
+            return 1;
         }
+    }
+    return 0;
+}
+
+static int
+line_ed(const char *msg, struct Line *line) {
+    int posx = line->size;
+    int offx = strlen(msg);
+    lint_t in;
+    lchar_t ch;
+
+    move(winy, 0);
+    clrtoeol();
+    addstr(msg);
+    addnwstr(line->data, line->size);
+
+    while (1) {
+        if (get_wch(&in) == ERR) {
+            return -1;
+        }
+        ch = in;
+        switch (ch) {
+        case KEY_DC:
+            if (posx != line->size) {
+                line_remove_span(line, posx + 1, -1);
+            }
+            break;
+        case KEY_BACKSPACE:
+            if (posx) {
+                line_remove_span(line, posx, -1);
+                posx--;
+            }
+            break;
+        case KEY_RIGHT:
+            if (posx < line->size) {
+                posx++;
+            }
+            break;
+        case KEY_LEFT:
+            if (posx) {
+                posx--;
+            }
+            break;
+        case KEY_CTRL_CANC:
+        case '\n':
+            return 0;
+        default:
+            if (iswprint(ch) || ch == L'\t') {
+                line_insert(line, posx, &ch, 1);
+                posx++;
+            }
+            break;
+        }
+        move(winy, offx);
+        clrtoeol();
+        addnwstr(line->data, line->size);
+        move(winy, offx + count_render_width_upto(line, posx));
     }
     return 0;
 }
