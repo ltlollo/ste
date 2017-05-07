@@ -18,28 +18,28 @@
 #define _XOPEN_SOURCE_EXTENDED
 #include <ncursesw/ncurses.h>
 
-#define TAB_SIZE 8
-#define SMALL_STR 8
-#define INIT_DIFF 4096
-#define INIT_DOC 1024
-#define INIT_LINE 16
-#define SSTR_SIZE 128
+#define TAB_SIZE    8
+#define SMALL_STR   8
+#define INIT_DIFF   4096
+#define INIT_DOC    1024
+#define INIT_LINE   16
+#define SSTR_SIZE   128
 
 #define MAX_DIFF_SIZE 0x1fffffff
 
-#define KEY_SHIFT_DOWN 336
-#define KEY_SHIFT_UP 337
+#define KEY_SHIFT_DOWN  336
+#define KEY_SHIFT_UP    337
 #define KEY_SHIFT_RIGHT 402
-#define KEY_SHIFT_LEFT 393
-#define KEY_PGDOWN 338
-#define KEY_PGUP 339
-#define KEY_CTRL_CANC 519
-#define KEY_CTRL_LEFT 545
-#define KEY_CTRL_RIGHT 560
-#define KEY_CTRL_DOWN 525
-#define KEY_CTRL_UP 566
+#define KEY_SHIFT_LEFT  393
+#define KEY_PGDOWN      338
+#define KEY_PGUP        339
+#define KEY_CTRL_CANC   519
+#define KEY_CTRL_LEFT   545
+#define KEY_CTRL_RIGHT  560
+#define KEY_CTRL_DOWN   525
+#define KEY_CTRL_UP     566
 #define KEY_CTRL_PGDOWN 550
-#define KEY_CTRL_PGUP 555
+#define KEY_CTRL_PGUP   555
 
 #define xrealloc_arr(p, size)                                                 \
     xrealloc_ptr(p, size, sizeof(*(*p)->data), sizeof(**p))
@@ -59,7 +59,7 @@ typedef wint_t lint_t;
 typedef wchar_t lchar_t;
 typedef int (*filt_fn_t)(lint_t);
 
-typedef enum DIFF_TYPE {
+enum DIFF_TYPE {
     DIFF_TYPE_ADDBRK,
     DIFF_TYPE_DELBRK,
     DIFF_TYPE_ADDCHR_SMALL,
@@ -68,9 +68,9 @@ typedef enum DIFF_TYPE {
     DIFF_TYPE_ADDCHR,
     DIFF_TYPE_DELCHR,
     // DIFF_TYPE_SUB,
-} DIFF_TYPE;
+};
 
-typedef struct __attribute__((packed)) Diff {
+struct __attribute__((packed)) Diff {
     struct __attribute__((packed)) {
         enum DIFF_TYPE type : 3;
         unsigned size : 29;
@@ -82,60 +82,69 @@ typedef struct __attribute__((packed)) Diff {
         lchar_t *data;
         filt_fn_t fil;
     };
-} Diff;
-_Static_assert(sizeof(Diff) == 12 + SMALL_STR, "unsupported architecture");
+};
+_Static_assert(sizeof(struct Diff) == 12 + SMALL_STR,
+               "unsupported architecture");
 
-typedef struct Line {
+struct Line {
     long long size;
     long long alloc;
     lchar_t *data;
-} Line;
+};
 
-typedef struct DiffStk {
+struct DiffStk {
+    long long curr_save_point;
     long long size;
     long long alloc;
     long long curr;
-    Diff _Alignas(32) data[];
-} DiffStk;
+    struct Diff _Alignas(32) data[];
+};
 
-typedef struct LineArr {
+struct LineArr {
     long long size;
     long long alloc;
-    Line _Alignas(32) data[];
-} LineArr;
+    struct Line _Alignas(32) data[];
+};
 
-typedef enum EFILE {
+enum EFILE {
     EFILE_OK = 0,
     EFILE_OPEN,
     EFILE_UTF8,
     EFILE_NOFILE
-} EFILE;
+};
 
-typedef enum DIREC {
+enum DIREC {
     DIREC_FORW,
     DIREC_BACK,
-} DIREC;
+};
 
-typedef enum TERN {
+enum TERN {
     TERN_Y,
     TERN_N,
     TERN_CANC,
-} TERN;
+};
 
-typedef struct Editor {
+struct Window {
+    int y;
+    int x;
+    int pgspan;
+};
+
+struct FileInfo {
+    char *fname;
+};
+
+struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
     int cursy;
     int cursx;
     int framebeg;
-    int winy;
-    int winx;
-    int pgspan;
-} Editor;
-
-typedef struct FileInfo {
-    char *fname;
-} FileInfo;
+    struct Window win;
+    struct Line search_word;
+    struct Line filename;
+    struct FileInfo fileinfo;
+};
 
 static int
 always(lint_t p) {
@@ -146,130 +155,122 @@ always(lint_t p) {
 static filt_fn_t filts[] = {
     iswalnum, iswpunct, iswspace, iswprint, always,
 };
-static struct FileInfo fileinfo = { NULL };
-static struct Line search_word = { 0, 0, 0 };
-static struct Line filename = {0, 0, 0 };
-static long long curr_save_point = 0;
-static struct LineArr *doc = NULL;
-static struct DiffStk *diffstk = NULL;
-static int cursx = 0;
-static int cursy = 0;
-static int framebeg = 0;
-static int winx;
-static int winy;
-static int pgspan;
 
 static int always(lint_t);
 static void diffstk_incr(struct DiffStk *);
-static void diffstk_reserve(struct DiffStk *);
-static void diffstk_insert_addbk(struct DiffStk *, int, int);
-static void diffstk_insert_delbk(struct DiffStk *, int, int);
+static void diffstk_reserve(struct DiffStk **);
+static void diffstk_insert_addbk(struct Editor *, int, int);
+static void diffstk_insert_delbk(struct Editor *, int, int);
 static int eq_bigch(struct Diff *, enum DIFF_TYPE);
-static void diffstk_insert_span(struct DiffStk *, lchar_t *, int);
-static void insert_doc(int, struct Line *, int);
-static void insert_doc_nl_times(int, int);
+static void diffstk_insert_span(struct Editor *, lchar_t *, int);
+static void insert_doc(struct LineArr **, int, struct Line *, int);
+static void insert_doc_nl_times(struct LineArr **, int, int);
 static void line_insert(struct Line *, int, lchar_t *, int);
-static void merge_lines(int);
-static void line_remove_span_qdiff(struct Line *, int, int);
+static void merge_lines(struct LineArr *, int);
+static void line_remove_span_qdiff(struct Editor *, struct Line *, int, int);
 static filt_fn_t find_match_fil(lint_t);
 static int find_prev_simil(const void *, int);
 static int find_next_simil(const void *, int, int);
 static int realloc_ptr(void *, size_t, size_t, size_t);
 static void xrealloc_ptr(void *, size_t, size_t, size_t);
 static void close_win(void);
-static void open_win(void);
-static void init_editor(const char *);
-static int move_right(void);
-static int move_left(void);
-static int del_back(void);
-static int move_up(void);
-static int move_pgup(void);
-static int move_pgdown(void);
-static int move_down(void);
-static int move_down_natural(void);
-static int move_up_natural(void);
-static void diff_apply_brk(struct Diff *, enum DIREC);
-static void diff_apply_chr(struct Diff *, enum DIREC);
-static int diffstk_apply_last(struct DiffStk *, enum DIREC);
-static void save_current(struct LineArr *, struct FileInfo *);
-static int handle_input(lint_t);
-static int render_loop(void);
+static void open_win(struct Editor *);
+static void init_editor(struct Editor *, const char *);
+static int move_right(struct Editor *);
+static int move_left(struct Editor *);
+static int del_back(struct Editor *);
+static int move_up(struct Editor *);
+static int move_pgup(struct Editor *);
+static int move_pgdown(struct Editor *);
+static int move_down(struct Editor *);
+static int move_down_natural(struct Editor *);
+static int move_up_natural(struct Editor *);
+static void diff_apply_brk(struct Editor *, struct Diff *, enum DIREC);
+static void diff_apply_chr(struct Editor *, struct Diff *, enum DIREC);
+static int diffstk_apply_last(struct Editor *, enum DIREC);
+static void save_current(struct LineArr *, struct FileInfo *,
+                         struct DiffStk *);
+static int handle_input(struct Editor *, lint_t);
+static int render_loop(struct Editor *);
 
-static int count_render_width_upto(struct Line *, int);
-static lchar_t * render_max_given_width(lchar_t *, lchar_t *, int);
-static lchar_t * render_back_max_given_width(lchar_t *, lchar_t *, int);
-static int count_nlines_upto(struct Line *, int);
-static int count_nlines(struct Line *);
-static int count_lines(void);
-static void reposition_frame(void);
-static void render_lines(void);
-static void render_editor_info(void);
-static void reposition_cursor(void);
-static enum EFILE load_file_utf8(const char *);
+static int count_render_width_upto(struct Window *, struct Line *, int);
+static lchar_t * render_max_given_width(struct Window *, lchar_t *, lchar_t *,
+                                        int);
+static lchar_t * render_back_max_given_width(struct Window *, lchar_t *,
+                                             lchar_t *, int);
+static int count_nlines_upto(struct Editor *, struct Line *, int);
+static int count_nlines(struct Editor *, struct Line *);
+static int count_lines(struct Editor *);
+static void reposition_frame(struct Editor *);
+static void render_lines(struct Editor *);
+static void render_editor_info(struct Editor *);
+static void reposition_cursor(struct Editor *);
+static enum EFILE load_file_utf8(struct Editor *, const char *);
 static int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
-static void save_file_utf8(struct LineArr *, struct FileInfo *);
+static void save_file_utf8(struct LineArr *, struct FileInfo *,
+                           struct DiffStk *);
 static char * mkstr_nmt(const char *, ...);
 static wchar_t *wmkstr_nmt(const wchar_t *, ...);
-static int usr_quit(void);
-static int move_to_word(const lchar_t *str, long size);
-static int line_ed(const char *, struct Line *);
+static int usr_quit(struct Editor *);
+static int move_to_word(struct Editor *, const lchar_t *str, long size);
+static int line_ed(struct Window *win, const char *, struct Line *);
 static void line_remove_span(struct Line *, int, int);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
     if (diffstk->curr < diffstk->size) {
-        for (int i = diffstk->curr; i < diffstk->size; ++i) {
+        for (int i = diffstk->curr; i < diffstk->size; i++) {
             if (diffstk->data[i].type > DIFF_TYPE_INLINE) {
                 free(diffstk->data[i].data);
                 diffstk->data[i].type = 0;
             }
         }
     }
-    if (diffstk->curr < curr_save_point) {
-        curr_save_point = -1;
+    if (diffstk->curr < diffstk->curr_save_point) {
+        diffstk->curr_save_point = -1;
     }
     diffstk->curr++;
     diffstk->size = diffstk->curr;
 }
 
 static void
-diffstk_reserve(struct DiffStk *diffstk) {
+diffstk_reserve(struct DiffStk **diffstk) {
     struct Diff *beg;
     struct Diff *end;
 
-    if (diffstk->size == diffstk->alloc) {
-        xrealloc_arr(&diffstk, diffstk->alloc * 2 + 1);
-        diffstk->alloc = diffstk->alloc * 2 + 1;
+    if ((*diffstk)->size == (*diffstk)->alloc) {
+        xrealloc_arr(diffstk, (*diffstk)->alloc * 2 + 1);
+        (*diffstk)->alloc = (*diffstk)->alloc * 2 + 1;
     }
-    beg = diffstk->data + diffstk->size;
-    end = diffstk->data + diffstk->alloc;
-    memset(beg, 0, (end - beg) * sizeof(*diffstk->data));
+    beg = (*diffstk)->data + (*diffstk)->size;
+    end = (*diffstk)->data + (*diffstk)->alloc;
+    memset(beg, 0, (end - beg) * sizeof(*(*diffstk)->data));
 }
 
 static void
-diffstk_insert_addbk(struct DiffStk *diffstk, int y, int x) {
+diffstk_insert_addbk(struct Editor *edp, int y, int x) {
     long long pos;
     struct Diff *curr;
     struct Diff *prev;
 
-    diffstk_reserve(diffstk);
+    diffstk_reserve(&edp->diffstk);
 
-    pos = diffstk->curr;
-    curr = diffstk->data + pos;
-    prev = diffstk->data + pos - 1;
+    pos  = edp->diffstk->curr;
+    curr = edp->diffstk->data + pos;
+    prev = edp->diffstk->data + pos - 1;
 
     if (pos == 0 || prev->type != DIFF_TYPE_ADDBRK ||
         prev->size == MAX_DIFF_SIZE) {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = DIFF_TYPE_ADDBRK;
         curr->size = 1;
         curr->y = y;
         curr->x = x;
-    } else if (prev->y == cursy - prev->size && cursx == 0) {
+    } else if (prev->y == edp->cursy - prev->size && edp->cursx == 0) {
         prev->size++;
     } else {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = DIFF_TYPE_ADDBRK;
         curr->size = 1;
         curr->y = y;
@@ -278,30 +279,30 @@ diffstk_insert_addbk(struct DiffStk *diffstk, int y, int x) {
 }
 
 static void
-diffstk_insert_delbk(struct DiffStk *diffstk, int y, int x) {
+diffstk_insert_delbk(struct Editor *edp, int y, int x) {
     long long pos;
     struct Diff *curr;
     struct Diff *prev;
 
-    diffstk_reserve(diffstk);
+    diffstk_reserve(&edp->diffstk);
 
-    pos = diffstk->curr;
-    curr = diffstk->data + pos;
-    prev = diffstk->data + pos - 1;
+    pos  = edp->diffstk->curr;
+    curr = edp->diffstk->data + pos;
+    prev = edp->diffstk->data + pos - 1;
 
     if (pos == 0 || prev->type != DIFF_TYPE_DELBRK ||
         prev->size == MAX_DIFF_SIZE) {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = DIFF_TYPE_DELBRK;
         curr->size = 1;
         curr->y = y;
         curr->x = x;
-    } else if (prev->y == cursy + prev->size && prev->x == 0) {
-        prev->x = cursx;
+    } else if (prev->y == edp->cursy + prev->size && prev->x == 0) {
+        prev->x = edp->cursx;
         prev->y--;
         prev->size++;
     } else {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = DIFF_TYPE_DELBRK;
         curr->size = 1;
         curr->y = y;
@@ -322,7 +323,7 @@ eq_bigch(struct Diff *diff, enum DIFF_TYPE small) {
 }
 
 static void
-diffstk_insert_span(struct DiffStk *diffstk, lchar_t *str, int delta) {
+diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta) {
     long long pos;
     struct Diff *curr;
     struct Diff *prev;
@@ -331,11 +332,11 @@ diffstk_insert_span(struct DiffStk *diffstk, lchar_t *str, int delta) {
     filt_fn_t curr_fil;
     filt_fn_t prev_fil;
 
-    diffstk_reserve(diffstk);
+    diffstk_reserve(&edp->diffstk);
 
-    pos = diffstk->curr;
-    curr = diffstk->data + pos;
-    prev = diffstk->data + pos - 1;
+    pos  = edp->diffstk->curr;
+    curr = edp->diffstk->data + pos;
+    prev = edp->diffstk->data + pos - 1;
 
     if (delta < 0) {
         type = DIFF_TYPE_DELCHR_SMALL;
@@ -348,11 +349,11 @@ diffstk_insert_span(struct DiffStk *diffstk, lchar_t *str, int delta) {
     curr_fil = find_match_fil(sample);
 
     if (pos == 0 || !eq_bigch(prev, type) || prev->size == MAX_DIFF_SIZE) {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = type;
         curr->size = 0;
-        curr->x = cursx;
-        curr->y = cursy;
+        curr->x = edp->cursx;
+        curr->y = edp->cursy;
         diff_insert_span(curr, str, delta);
         return;
     }
@@ -363,57 +364,57 @@ diffstk_insert_span(struct DiffStk *diffstk, lchar_t *str, int delta) {
         sample = prev->data[0];
     }
     prev_fil = find_match_fil(sample);
-    if (prev->y == cursy && prev->x + prev->size == cursx &&
+    if (prev->y == edp->cursy && prev->x + prev->size == edp->cursx &&
         curr_fil == prev_fil) {
         diff_insert_span(prev, str, delta);
     } else {
-        diffstk_incr(diffstk);
+        diffstk_incr(edp->diffstk);
         curr->type = type;
         curr->size = 0;
-        curr->x = cursx;
-        curr->y = cursy;
+        curr->x = edp->cursx;
+        curr->y = edp->cursy;
         diff_insert_span(curr, str, delta);
     }
 }
 
 static void
-insert_doc(int pos, struct Line *cpy, int size) {
+insert_doc(struct LineArr **doc, int pos, struct Line *cpy, int size) {
     struct Line *beg;
     struct Line *end;
 
-    assert(doc->size <= doc->alloc);
-    assert(pos <= doc->size);
+    assert((*doc)->size <= (*doc)->alloc);
+    assert(pos <= (*doc)->size);
 
-    if (doc->size + size > doc->alloc) {
-        xrealloc_arr(&doc, doc->alloc * 2 + size);
-        doc->alloc = doc->alloc * 2 + size;
+    if ((*doc)->size + size > (*doc)->alloc) {
+        xrealloc_arr(doc, (*doc)->alloc * 2 + size);
+        (*doc)->alloc = (*doc)->alloc * 2 + size;
     }
-    beg = doc->data + pos;
-    end = doc->data + doc->size;
+    beg = (*doc)->data + pos;
+    end = (*doc)->data + (*doc)->size;
 
-    memmove(beg + size, beg, (end - beg) * sizeof(*doc->data));
-    memcpy(beg, cpy, size * sizeof(*doc->data));
-    doc->size += size;
+    memmove(beg + size, beg, (end - beg) * sizeof(*(*doc)->data));
+    memcpy(beg, cpy, size * sizeof(*(*doc)->data));
+    (*doc)->size += size;
 }
 
 static void
-insert_doc_nl_times(int pos, int size) {
+insert_doc_nl_times(struct LineArr **doc, int pos, int size) {
     struct Line *beg;
     struct Line *end;
 
-    assert(doc->size <= doc->alloc);
-    assert(pos <= doc->size);
+    assert((*doc)->size <= (*doc)->alloc);
+    assert(pos <= (*doc)->size);
 
-    if (doc->size + size > doc->alloc) {
-        xrealloc_arr(&doc, doc->alloc * 2 + size);
-        doc->alloc = doc->alloc * 2 + size;
+    if ((*doc)->size + size > (*doc)->alloc) {
+        xrealloc_arr(doc, (*doc)->alloc * 2 + size);
+        (*doc)->alloc = (*doc)->alloc * 2 + size;
     }
-    beg = doc->data + pos;
-    end = doc->data + doc->size;
+    beg = (*doc)->data + pos;
+    end = (*doc)->data + (*doc)->size;
 
-    memmove(beg + size, beg, (end - beg) * sizeof(*doc->data));
-    memset(beg, 0, size * sizeof(*doc->data));
-    doc->size += size;
+    memmove(beg + size, beg, (end - beg) * sizeof(*(*doc)->data));
+    memset(beg, 0, size * sizeof(*(*doc)->data));
+    (*doc)->size += size;
 }
 
 static void
@@ -437,7 +438,7 @@ line_insert(struct Line *line, int pos, lchar_t *cpy, int size) {
 }
 
 static void
-merge_lines(int pos) {
+merge_lines(struct LineArr *doc, int pos) {
     struct Line *line = &doc->data[pos];
     struct Line *next = line + 1;
     struct Line *end;
@@ -454,7 +455,7 @@ merge_lines(int pos) {
     beg = next + 1;
     end = doc->data + doc->size;
     memmove(next, beg, (end - beg) * sizeof(*doc->data));
-    --doc->size;
+    doc->size--;
 }
 
 static void
@@ -469,8 +470,9 @@ line_remove_span(struct Line *line, int pos, int delta) {
 }
 
 static void
-line_remove_span_qdiff(struct Line *line, int pos, int delta) {
-    diffstk_insert_span(diffstk, line->data + pos, delta);
+line_remove_span_qdiff(struct Editor *edp, struct Line *line,
+                       int pos, int delta) {
+    diffstk_insert_span(edp, line->data + pos, delta);
     line_remove_span(line, pos, delta);
 }
 
@@ -478,7 +480,7 @@ static filt_fn_t
 find_match_fil(lint_t ch) {
     filt_fn_t fil = NULL;
 
-    for (int i = 0; i < arrsize(filts); ++i) {
+    for (int i = 0; i < arrsize(filts); i++) {
         if (filts[i](ch)) {
             fil = filts[i];
             break;
@@ -496,7 +498,7 @@ find_prev_simil(const void *data, int cursor) {
     filt_fn_t fil = find_match_fil(ch);
 
     while (cursor && fil(usrin[cursor - 1])) {
-        --cursor;
+        cursor--;
     }
     return cursor;
 }
@@ -542,63 +544,67 @@ close_win(void) {
 }
 
 static void
-open_win(void) {
+open_win(struct Editor *edp) {
     initscr();
     noecho();
     raw();
     keypad(stdscr, TRUE);
     intrflush(stdscr, FALSE);
     set_tabsize(TAB_SIZE);
-    winx = COLS;
-    winy = LINES;
-    if (winy > 1) {
-        winy--;
+    edp->win.x = COLS;
+    edp->win.y = LINES;
+    if (edp->win.y > 1) {
+        edp->win.y--;
     }
-    pgspan = winy / 4 * 3;
+    edp->win.pgspan = edp->win.y / 4 * 3;
 }
 
 static void
-init_editor(const char *fname) {
+init_editor(struct Editor *edp, const char *fname) {
     enum EFILE efile;
 
     setlocale(LC_ALL, "");
 
-    xrealloc_arr(&doc, INIT_DOC);
-    xrealloc_arr(&diffstk, INIT_DIFF);
+    xrealloc_arr(&edp->doc, INIT_DOC);
+    xrealloc_arr(&edp->diffstk, INIT_DIFF);
 
-    memset(doc, 0, sizeof(struct LineArr) + sizeof(*doc->data) * INIT_DOC);
-    doc->alloc = INIT_DOC;
-    doc->size = 0;
+    memset(edp->doc, 0,
+           sizeof(struct LineArr) + sizeof(*edp->doc->data) * INIT_DOC);
+    edp->doc->alloc = INIT_DOC;
+    edp->doc->size = 0;
 
-    efile = load_file_utf8(fname);
+    edp->diffstk->curr_save_point = 0;
+
+    efile = load_file_utf8(edp, fname);
     if (efile != EFILE_OK) {
         if (efile == EFILE_UTF8) {
             errx(1, "invalid utf8 content in '%s'", fname);
         } else if (efile == EFILE_OPEN) {
             err(1, "fopen '%s'", fname);
         } else {
-            doc->size = 1;
+            edp->doc->size = 1;
         }
     }
-    fileinfo.fname = strdup(fname);
+    edp->fileinfo.fname = strdup(fname);
 
-    memset(diffstk, 0, sizeof(DiffStk) + sizeof(*diffstk->data) * INIT_DIFF);
-    diffstk->alloc = INIT_DIFF;
-    diffstk->size = 0;
+    memset(edp->diffstk, 0,
+           sizeof(struct DiffStk) + sizeof(*edp->diffstk->data) * INIT_DIFF);
+    edp->diffstk->alloc = INIT_DIFF;
+    edp->diffstk->size = 0;
 
-    open_win();
+    open_win(edp);
     atexit(close_win);
 }
 
 static int
-move_right(void) {
-    struct Line *line = &doc->data[cursy];
+move_right(struct Editor *edp) {
+    struct Line *line = &edp->doc->data[edp->cursy];
 
-    if (cursx < line->size) {
-        ++cursx;
-    } else if (cursy < doc->size - 1) {
-        cursy++;
-        cursx = 0;
+    if (edp->cursx < line->size) {
+        edp->cursx++;
+    } else if (edp->cursy < edp->doc->size - 1) {
+        edp->cursy++;
+        edp->cursx = 0;
     } else {
         return -1;
     }
@@ -606,192 +612,192 @@ move_right(void) {
 }
 
 static int
-move_left(void) {
-    if (cursy == 0 && cursx == 0) {
+move_left(struct Editor *edp) {
+    if (edp->cursy == 0 && edp->cursx == 0) {
         return -1;
-    } else if (cursx != 0) {
-        --cursx;
+    } else if (edp->cursx != 0) {
+        edp->cursx--;
     } else {
-        cursy--;
-        cursx = doc->data[cursy].size;
+        edp->cursy--;
+        edp->cursx = edp->doc->data[edp->cursy].size;
     }
     return 0;
 }
 
 static int
-del_back(void) {
+del_back(struct Editor *edp) {
     struct Line *line;
 
-    if (cursy == 0 && cursx == 0) {
+    if (edp->cursy == 0 && edp->cursx == 0) {
         return -1;
     }
-    if (cursx == 0) {
-        --cursy;
-        line = &doc->data[cursy];
-        cursx = line->size;
-        merge_lines(cursy);
+    if (edp->cursx == 0) {
+        edp->cursy--;
+        line = &edp->doc->data[edp->cursy];
+        edp->cursx = line->size;
+        merge_lines(edp->doc, edp->cursy);
 
-        diffstk_insert_delbk(diffstk, cursy, cursx);
+        diffstk_insert_delbk(edp, edp->cursy, edp->cursx);
     } else {
-        line = &doc->data[cursy];
-        line_remove_span_qdiff(line, cursx, -1);
-        --cursx;
+        line = &edp->doc->data[edp->cursy];
+        line_remove_span_qdiff(edp, line, edp->cursx, -1);
+        edp->cursx--;
     }
     return 0;
 }
 
 static int
-move_up(void) {
-    struct Line *line = &doc->data[cursy];
+move_up(struct Editor *edp) {
+    struct Line *line = &edp->doc->data[edp->cursy];
 
-    if (cursy == 0) {
-        if (cursx != 0) {
-            cursx = 0;
+    if (edp->cursy == 0) {
+        if (edp->cursx != 0) {
+            edp->cursx = 0;
             return 0;
         } else {
             return -1;
         }
     }
-    --cursy;
-    --line;
-    if (cursx > line->size) {
-        cursx = line->size;
+    edp->cursy--;
+    line--;
+    if (edp->cursx > line->size) {
+        edp->cursx = line->size;
     }
     return 0;
 }
 
 static int
-move_pgup(void) {
-    static Line *line;
+move_pgup(struct Editor *edp) {
+    static struct Line *line;
 
-    if (cursy - pgspan < 0) {
-        cursy = 0;
+    if (edp->cursy - edp->win.pgspan < 0) {
+        edp->cursy = 0;
     } else {
-        cursy -= pgspan;
+        edp->cursy -= edp->win.pgspan;
     }
-    line = &doc->data[cursy];
+    line = &edp->doc->data[edp->cursy];
 
-    if (cursx <= line->size) {
+    if (edp->cursx <= line->size) {
         return 0;
     } else {
-        cursx = line->size;
+        edp->cursx = line->size;
     }
     return 0;
 }
 
 static int
-move_pgdown(void) {
-    static Line *line;
+move_pgdown(struct Editor *edp) {
+    static struct Line *line;
 
-    if (cursy + pgspan >= doc->size) {
-        cursy = doc->size - 1;
+    if (edp->cursy + edp->win.pgspan >= edp->doc->size) {
+        edp->cursy = edp->doc->size - 1;
     } else {
-        cursy += pgspan;
+        edp->cursy += edp->win.pgspan;
     }
-    line = &doc->data[cursy];
+    line = &edp->doc->data[edp->cursy];
 
-    if (cursx <= line->size) {
+    if (edp->cursx <= line->size) {
         return 0;
     } else {
-        cursx = line->size;
+        edp->cursx = line->size;
     }
     return 0;
 }
 
 static int
-move_down(void) {
-    struct Line *line = &doc->data[cursy];
+move_down(struct Editor *edp) {
+    struct Line *line = &edp->doc->data[edp->cursy];
 
-    if (cursy == doc->size - 1) {
-        if (cursx != line->size) {
-            cursx = line->size;
+    if (edp->cursy == edp->doc->size - 1) {
+        if (edp->cursx != line->size) {
+            edp->cursx = line->size;
             return 0;
         } else {
             return -1;
         }
     }
-    ++cursy;
-    ++line;
-    if (cursx > line->size) {
-        cursx = line->size;
+    edp->cursy++;
+    line++;
+    if (edp->cursx > line->size) {
+        edp->cursx = line->size;
     }
     return 0;
 }
 
 static int
-move_down_natural(void) {
-    struct Line *line = &doc->data[cursy];
-    lchar_t *beg = &line->data[cursx];
-    lchar_t *end = render_max_given_width(beg, line->data + line->size, winx);
-
+move_down_natural(struct Editor *edp) {
+    struct Line *line = &edp->doc->data[edp->cursy];
+    lchar_t *beg = &line->data[edp->cursx];
+    lchar_t *end = render_max_given_width(&edp->win, beg,
+                                          line->data + line->size, edp->win.x);
     if (end != line->data + line->size) {
-        cursx += end - beg;
+        edp->cursx += end - beg;
         return 0;
     } else {
-        move_down();
+        move_down(edp);
     }
     return 0;
 }
 
 static int
-move_up_natural(void) {
-    struct Line *line = &doc->data[cursy];
-    lchar_t *end = &line->data[cursx];
-    lchar_t *beg = render_back_max_given_width(end, line->data - 1, winx);
-
+move_up_natural(struct Editor *edp) {
+    struct Line *line = &edp->doc->data[edp->cursy];
+    lchar_t *end = &line->data[edp->cursx];
+    lchar_t *beg = render_back_max_given_width(&edp->win, end, line->data - 1,
+                                               edp->win.x);
     if (beg < line->data || line->size == 0) {
-        move_up();
+        move_up(edp);
         return 0;
     } else {
-        cursx -= end - beg;
+        edp->cursx -= end - beg;
     }
     return 0;
 }
 
 static void
-diff_apply_brk(struct Diff *diff, enum DIREC direc) {
+diff_apply_brk(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     struct Line own = { 0, 0, 0 };
 
-    cursx = diff->x;
-    cursy = diff->y;
-    line = &doc->data[cursy];
+    edp->cursx = diff->x;
+    edp->cursy = diff->y;
+    line = &edp->doc->data[edp->cursy];
     if (((diff->type == DIFF_TYPE_ADDBRK) ^ (direc == DIREC_FORW)) == 0) {
-        assert(cursy >= 0);
-        for (int i = 0; i < diff->size; ++i) {
-            merge_lines(cursy);
+        assert(edp->cursy >= 0);
+        for (int i = 0; i < diff->size; i++) {
+            merge_lines(edp->doc, edp->cursy);
         }
     } else {
         assert(diff->size);
-        line_insert(&own, 0, line->data + cursx, line->size - cursx);
-        line->size = cursx;
-        insert_doc_nl_times(cursy + 1, diff->size - 1);
-        insert_doc(cursy + diff->size, &own, 1);
-        cursx = 0;
-        cursy += diff->size;
+        line_insert(&own, 0, line->data + edp->cursx, line->size - edp->cursx);
+        line->size = edp->cursx;
+        insert_doc_nl_times(&edp->doc, edp->cursy + 1, diff->size - 1);
+        insert_doc(&edp->doc, edp->cursy + diff->size, &own, 1);
+        edp->cursx = 0;
+        edp->cursy += diff->size;
     }
 }
 
 static void
-diff_apply_chr(struct Diff *diff, enum DIREC direc) {
+diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     lchar_t *beg;
     lchar_t *to;
     lchar_t *end;
 
-    cursx = diff->x;
-    cursy = diff->y;
-    line = &doc->data[cursy];
+    edp->cursx = diff->x;
+    edp->cursy = diff->y;
+    line = &edp->doc->data[edp->cursy];
 
     if ((eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL) ^ (direc == DIREC_FORW)) ==
         0) {
         if (direc == DIREC_FORW) {
-            to = line->data + cursx;
-            beg = line->data + cursx + diff->size;
+            to = line->data + edp->cursx;
+            beg = line->data + edp->cursx + diff->size;
         } else {
-            to = line->data + cursx - diff->size;
-            beg = line->data + cursx;
-            cursx -= diff->size;
+            to = line->data + edp->cursx - diff->size;
+            beg = line->data + edp->cursx;
+            edp->cursx -= diff->size;
         }
         end = line->data + line->size;
         memmove(to, beg, (end - beg) * sizeof(*line->data));
@@ -801,53 +807,54 @@ diff_apply_chr(struct Diff *diff, enum DIREC direc) {
             xrealloc_owndata(line, line->alloc * 2 + diff->size);
             line->alloc = line->alloc * 2 + diff->size;
         }
-        beg = line->data + cursx - diff->size;
+        beg = line->data + edp->cursx - diff->size;
         end = line->data + line->size;
 
         memmove(beg + diff->size, beg, (end - beg) * sizeof(*line->data));
         line->size += diff->size;
         if (direc == DIREC_FORW) {
             if (diff->type <= DIFF_TYPE_INLINE) {
-                for (int i = diff->size; i; --i) {
+                for (int i = diff->size; i; i--) {
                     beg[diff->size - i] = diff->content[i - 1];
                 }
             } else {
-                for (int i = diff->size; i; --i) {
+                for (int i = diff->size; i; i--) {
                     beg[diff->size - i] = diff->data[i - 1];
                 }
             }
         } else {
             if (diff->type <= DIFF_TYPE_INLINE) {
-                for (int i = 0; i < diff->size; ++i) {
+                for (int i = 0; i < diff->size; i++) {
                     beg[diff->size + i] = diff->content[i];
                 }
             } else {
-                for (int i = 0; i < diff->size; ++i) {
+                for (int i = 0; i < diff->size; i++) {
                     beg[diff->size + i] = diff->data[i];
                 }
             }
-            cursx += diff->size;
+            edp->cursx += diff->size;
         }
     }
 }
 
 static int
-diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
-    struct Diff *diff = diffstk->data + diffstk->curr - 1;
+diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
+    struct Diff *diff = edp->diffstk->data + edp->diffstk->curr - 1;
     int err = 0;
     int delta;
 
     if (direc == DIREC_FORW) {
         delta = -1;
-        diff = diffstk->data + diffstk->curr - 1;
+        diff = edp->diffstk->data + edp->diffstk->curr - 1;
     } else {
         delta = 1;
-        diff = diffstk->data + diffstk->curr;
+        diff = edp->diffstk->data + edp->diffstk->curr;
     }
 
-    if (direc == DIREC_FORW && diffstk->curr == 0) {
+    if (direc == DIREC_FORW && edp->diffstk->curr == 0) {
         return -1;
-    } else if (direc == DIREC_BACK && diffstk->curr == diffstk->size) {
+    } else if (direc == DIREC_BACK &&
+               edp->diffstk->curr == edp->diffstk->size) {
         return -1;
     }
     switch (diff->type) {
@@ -856,99 +863,100 @@ diffstk_apply_last(struct DiffStk *diffstk, enum DIREC direc) {
         break;
     case DIFF_TYPE_ADDBRK:
     case DIFF_TYPE_DELBRK:
-        diff_apply_brk(diff, direc);
+        diff_apply_brk(edp, diff, direc);
         break;
     case DIFF_TYPE_ADDCHR:
     case DIFF_TYPE_ADDCHR_SMALL:
     case DIFF_TYPE_DELCHR:
     case DIFF_TYPE_DELCHR_SMALL:
-        diff_apply_chr(diff, direc);
+        diff_apply_chr(edp, diff, direc);
         break;
     }
-    diffstk->curr += delta;
+    edp->diffstk->curr += delta;
     return err;
 }
 
 static void
-save_current(struct LineArr *doc, struct FileInfo *info) {
-    if (diffstk->curr == curr_save_point) {
+save_current(struct LineArr *doc, struct FileInfo *info,
+             struct DiffStk *diffstk) {
+    if (diffstk->curr == diffstk->curr_save_point) {
         return;
     }
-    save_file_utf8(doc, info);
+    save_file_utf8(doc, info, diffstk);
 }
 
 static int
-handle_input(lint_t c) {
+handle_input(struct Editor *edp, lint_t c) {
     struct Line own = { 0, 0, 0 };
-    struct Line *line = &doc->data[cursy];
+    struct Line *line = &edp->doc->data[edp->cursy];
     int rest;
     lchar_t ch = c;
     const char *key;
 
-    assert(cursy < doc->size);
-    assert(cursx <= line->size);
+    assert(edp->cursy < edp->doc->size);
+    assert(edp->cursx <= line->size);
 
     switch (ch) {
     case KEY_CTRL_CANC:
         return 0;
     case L'\n':
-        diffstk_insert_addbk(diffstk, cursy, cursx);
-        line_insert(&own, 0, line->data + cursx, line->size - cursx);
-        insert_doc(cursy + 1, &own, 1);
-        line->size = cursx;
-        cursx = 0;
-        cursy++;
+        diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
+        line_insert(&own, 0, line->data + edp->cursx, line->size - edp->cursx);
+        insert_doc(&edp->doc, edp->cursy + 1, &own, 1);
+        line->size = edp->cursx;
+        edp->cursx = 0;
+        edp->cursy++;
         break;
     case KEY_RIGHT:
-        move_right();
+        move_right(edp);
         break;
     case KEY_LEFT:
-        move_left();
+        move_left(edp);
         break;
     case KEY_UP:
-        move_up();
+        move_up(edp);
         break;
     case KEY_DOWN:
-        move_down();
+        move_down(edp);
         break;
 
     case KEY_CTRL_UP:
     case KEY_SHIFT_UP:
-        move_up_natural();
+        move_up_natural(edp);
         break;
 
     case KEY_CTRL_DOWN:
     case KEY_SHIFT_DOWN:
-        move_down_natural();
+        move_down_natural(edp);
         break;
 
     case KEY_CTRL_LEFT:
     case KEY_SHIFT_LEFT:
-        if (cursy == 0 && cursx == 0) {
+        if (edp->cursy == 0 && edp->cursx == 0) {
             break;
-        } else if (cursx == 0) {
-            cursx = (line - 1)->size;
-            cursy--;
+        } else if (edp->cursx == 0) {
+            edp->cursx = (line - 1)->size;
+            edp->cursy--;
         } else {
-            cursx = find_prev_simil(line->data, cursx);
+            edp->cursx = find_prev_simil(line->data, edp->cursx);
         }
         break;
 
     case KEY_CTRL_RIGHT:
     case KEY_SHIFT_RIGHT:
-        if (cursx < line->size) {
-            cursx = find_next_simil(line->data, cursx, line->size);
-        } else if (cursy < doc->size - 1) {
-            cursx = 0;
-            cursy++;
+        if (edp->cursx < line->size) {
+            edp->cursx = find_next_simil(line->data, edp->cursx, line->size);
+        } else if (edp->cursy < edp->doc->size - 1) {
+            edp->cursx = 0;
+            edp->cursy++;
         }
         break;
 
     case KEY_PGUP:
-        move_pgup();
+        move_pgup(edp);
         break;
     case KEY_PGDOWN:
-        move_pgdown();
+        move_pgdown(edp);
         break;
     case KEY_CTRL_PGUP:
     case KEY_CTRL_PGDOWN:
@@ -956,14 +964,14 @@ handle_input(lint_t c) {
     case 23:
         key = keyname(ch);
         if (strcmp(key, "^W") == 0) {
-            if (cursx == 0) {
-                del_back();
+            if (edp->cursx == 0) {
+                del_back(edp);
                 break;
             }
-            line = &doc->data[cursy];
-            rest = find_prev_simil(line->data, cursx);
-            line_remove_span_qdiff(line, cursx, rest - cursx);
-            cursx = rest;
+            line = &edp->doc->data[edp->cursy];
+            rest = find_prev_simil(line->data, edp->cursx);
+            line_remove_span_qdiff(edp, line, edp->cursx, rest - edp->cursx);
+            edp->cursx = rest;
             break;
         }
         break;
@@ -971,79 +979,81 @@ handle_input(lint_t c) {
     case 18:
         key = keyname(ch);
         if (strcmp(key, "^R") == 0) {
-            diffstk_apply_last(diffstk, DIREC_BACK);
+            diffstk_apply_last(edp, DIREC_BACK);
         }
         break;
     case 21:
         key = keyname(ch);
         if (strcmp(key, "^U") == 0) {
-            diffstk_apply_last(diffstk, DIREC_FORW);
+            diffstk_apply_last(edp, DIREC_FORW);
         }
         break;
     case 19:
         key = keyname(ch);
         if (strcmp(key, "^S") == 0) {
-            save_current(doc, &fileinfo);
+            save_current(edp->doc, &edp->fileinfo, edp->diffstk);
         }
         break;
     case 17:
         key = keyname(ch);
         if (strcmp(key, "^Q") == 0) {
-            return usr_quit();
+            return usr_quit(edp);
         }
         break;
     case 24:
         key = keyname(ch);
         if (strcmp(key, "^X") == 0) {
-            save_current(doc, &fileinfo);
+            save_current(edp->doc, &edp->fileinfo, edp->diffstk);
             return 0;
         }
         break;
     case 31:
         key = keyname(ch);
         if (strcmp(key, "^_") == 0) {
-            line_ed("search: ", &search_word);
-            if (search_word.size) {
-                move_to_word(search_word.data, search_word.size);
+            line_ed(&edp->win, "search: ", &edp->search_word);
+            if (edp->search_word.size) {
+                move_to_word(edp, edp->search_word.data,
+                             edp->search_word.size);
             }
         }
         break;
     case 14:
         key = keyname(ch);
         if (strcmp(key, "^N") == 0) {
-            if (search_word.size) {
-                move_to_word(search_word.data, search_word.size);
+            if (edp->search_word.size) {
+                move_to_word(edp, edp->search_word.data,
+                             edp->search_word.size);
             }
         }
         break;
 
     case KEY_BACKSPACE:
-        del_back();
+        del_back(edp);
         break;
     case KEY_DC:
-        if (move_right() == -1) {
+        if (move_right(edp) == -1) {
             break;
         }
-        del_back();
+        del_back(edp);
         break;
     case KEY_RESIZE:
         erase();
-        winx = COLS;
-        winy = LINES;
-        if (winy > 1) {
-            winy--;
+        edp->win.x = COLS;
+        edp->win.y = LINES;
+        if (edp->win.y > 1) {
+            edp->win.y--;
         }
-        pgspan = winy / 4 * 3;
-        reposition_frame();
-        render_lines();
-        reposition_cursor();
+        edp->win.pgspan = edp->win.y / 4 * 3;
+        reposition_frame(edp);
+        render_lines(edp);
+        reposition_cursor(edp);
         refresh();
         break;
     default:
         if (iswprint(ch) || ch == L'\t') {
-            diffstk_insert_span(diffstk, &ch, 1);
-            line_insert(line, cursx, &ch, 1);
-            cursx++;
+            diffstk_insert_span(edp, &ch, 1);
+            line_insert(line, edp->cursx, &ch, 1);
+            edp->cursx++;
         }
         break;
     }
@@ -1051,49 +1061,50 @@ handle_input(lint_t c) {
 }
 
 static int
-render_loop(void) {
+render_loop(struct Editor *edp) {
     lint_t ch;
 
-    reposition_frame();
+    reposition_frame(edp);
     erase();
-    render_lines();
-    render_editor_info();
-    reposition_cursor();
+    render_lines(edp);
+    render_editor_info(edp);
+    reposition_cursor(edp);
 
     if (get_wch(&ch) == ERR) {
         return 1;
     }
-    return handle_input(ch);
+    return handle_input(edp, ch);
 }
 
 int
 main(int argc, char *argv[]) {
+    static struct Editor pub_ed;
     int cont;
 
     if (argc - 1 != 1) {
         errx(1, "need help?");
     }
-    init_editor(argv[1]);
+    init_editor(&pub_ed, argv[1]);
 
     do {
-        cont = render_loop();
+        cont = render_loop(&pub_ed);
     } while (cont);
 
     return 0;
 }
 
 static int
-count_render_width_upto(struct Line *line, int size) {
+count_render_width_upto(struct Window *win, struct Line *line, int size) {
     int nlines = 0;
     int currline = 0;
     int char_w;
 
-    for (int i = 0; i < size && i < line->size; ++i) {
+    for (int i = 0; i < size && i < line->size; i++) {
         char_w = wcwidth(line->data[i]);
-        assert(char_w < winx);
+        assert(char_w < win->x);
         if (char_w != -1) {
-            if (currline + char_w > winx) {
-                ++nlines;
+            if (currline + char_w > win->x) {
+                nlines++;
                 currline = char_w;
             } else {
                 currline += char_w;
@@ -1101,27 +1112,28 @@ count_render_width_upto(struct Line *line, int size) {
         } else {
             assert(line->data[i] == L'\t');
             currline /= TAB_SIZE;
-            ++currline;
+            currline++;
             currline *= TAB_SIZE;
-            if (currline > winx) {
-                ++nlines;
+            if (currline > win->x) {
+                nlines++;
                 currline = 0;
             }
         }
     }
-    return nlines * winx + currline;
+    return nlines * win->x + currline;
 }
 
 static lchar_t *
-render_max_given_width(lchar_t *beg, lchar_t *end, int width) {
+render_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
+                       int width) {
     int currline = 0;
     int char_w;
 
     while (beg < end && currline < width) {
         char_w = wcwidth(*beg);
-        assert(char_w < winx);
+        assert(char_w < win->x);
         if (char_w != -1) {
-            if (currline + char_w > winx) {
+            if (currline + char_w > win->x) {
                 break;
             } else {
                 currline += char_w;
@@ -1129,28 +1141,29 @@ render_max_given_width(lchar_t *beg, lchar_t *end, int width) {
         } else {
             assert(*beg == L'\t');
             currline /= TAB_SIZE;
-            ++currline;
+            currline++;
             currline *= TAB_SIZE;
-            if (currline > winx) {
-                ++beg;
+            if (currline > win->x) {
+                beg++;
                 break;
             }
         }
-        ++beg;
+        beg++;
     }
     return beg;
 }
 
 static lchar_t *
-render_back_max_given_width(lchar_t *beg, lchar_t *end, int width) {
+render_back_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
+                            int width) {
     int currline = 0;
     int char_w;
 
     while (beg > end && currline < width) {
         char_w = wcwidth(*beg);
-        assert(char_w < winx);
+        assert(char_w < win->x);
         if (char_w != -1) {
-            if (currline + char_w > winx) {
+            if (currline + char_w > win->x) {
                 break;
             } else {
                 currline += char_w;
@@ -1158,97 +1171,98 @@ render_back_max_given_width(lchar_t *beg, lchar_t *end, int width) {
         } else {
             assert(*beg == L'\t');
             currline /= TAB_SIZE;
-            ++currline;
+            currline++;
             currline *= TAB_SIZE;
-            if (currline > winx) {
-                --beg;
+            if (currline > win->x) {
+                beg--;
                 break;
             }
         }
-        --beg;
+        beg--;
     }
     return beg;
 }
 
 static int
-count_nlines_upto(struct Line *line, int size) {
-    int chars = count_render_width_upto(line, size);
+count_nlines_upto(struct Editor *edp, struct Line *line, int size) {
+    int chars = count_render_width_upto(&edp->win, line, size);
 
-    if (doc->data + cursy == line && cursx == line->size) {
+    if (edp->doc->data + edp->cursy == line && edp->cursx == line->size) {
         // add space for the cursor when is at the end of the line
-        ++chars;
+        chars++;
     }
     if (chars == 0) {
         return 1;
     }
-    return (chars / winx) + (chars % winx != 0);
+    return (chars / edp->win.x) + (chars % edp->win.x != 0);
 }
 
 static int
-count_nlines(struct Line *line) {
-    return count_nlines_upto(line, line->size);
+count_nlines(struct Editor *edp, struct Line *line) {
+    return count_nlines_upto(edp, line, line->size);
 }
 
 static int
-count_lines(void) {
+count_lines(struct Editor *edp) {
     int lines = 0;
-    struct Line *line = doc->data + framebeg;
+    struct Line *line = edp->doc->data + edp->framebeg;
 
-    while (line < doc->data + cursy) {
-        lines += count_nlines(line);
-        ++line;
+    while (line < edp->doc->data + edp->cursy) {
+        lines += count_nlines(edp, line);
+        line++;
     }
-    return lines + count_nlines_upto(line, cursx);
+    return lines + count_nlines_upto(edp, line, edp->cursx);
 }
 
 static void
-reposition_frame(void) {
+reposition_frame(struct Editor *edp) {
     int overlines;
 
-    if (cursy > framebeg) {
-        overlines = count_lines() - winy;
+    if (edp->cursy > edp->framebeg) {
+        overlines = count_lines(edp) - edp->win.y;
         while (overlines > 0) {
-            overlines -= count_nlines(&doc->data[framebeg]);
-            ++framebeg;
+            overlines -= count_nlines(edp, &edp->doc->data[edp->framebeg]);
+            edp->framebeg++;
         }
-    } else if (cursy < framebeg) {
-        framebeg = cursy;
+    } else if (edp->cursy < edp->framebeg) {
+        edp->framebeg = edp->cursy;
     }
 }
 
 static void
-render_lines(void) {
-    struct Line *line = doc->data + framebeg;
-    struct Line *end = doc->data + doc->size;
+render_lines(struct Editor *edp) {
+    struct Line *line = edp->doc->data + edp->framebeg;
+    struct Line *end = edp->doc->data + edp->doc->size;
     int lines = 0;
     int rest;
 
-    while (lines < winy && line < end) {
-        rest = count_nlines(line);
-        if (lines + rest <= winy) {
+    while (lines < edp->win.y && line < end) {
+        rest = count_nlines(edp, line);
+        if (lines + rest <= edp->win.y) {
             addnwstr(line->data, line->size);
             lines += rest;
-            ++line;
+            line++;
             move(lines, 0);
         } else {
             lchar_t *end = line->data, *beg;
-            while (lines != winy) {
+            while (lines != edp->win.y) {
                 beg = end;
-                end = render_max_given_width(end, line->data + line->size,
-                                             winx);
+                end = render_max_given_width(&edp->win, end,
+                                             line->data + line->size,
+                                             edp->win.x);
                 addnwstr(beg, end - beg);
-                ++lines;
+                lines++;
             }
-            ++line;
+            line++;
         }
     }
 }
 
 static void
-render_editor_info(void) {
+render_editor_info(struct Editor *edp) {
     static wchar_t *msg;
 
-    if (winy < 2) {
+    if (edp->win.y < 2) {
         return;
     }
     msg = wmkstr_nmt(L"file: %s"
@@ -1258,32 +1272,33 @@ render_editor_info(void) {
                      "%d,%d"
                      "\t"
                      "%lld%%",
-                     fileinfo.fname, search_word.size, search_word.data,
-                     cursy + 1, cursx + 1, (cursy + 1) * 100 / doc->size);
-    move(winy, 0);
+                     edp->fileinfo.fname, edp->search_word.size,
+                     edp->search_word.data, edp->cursy + 1, edp->cursx + 1,
+                         (edp->cursy + 1) * 100 / edp->doc->size);
+    move(edp->win.y, 0);
     addwstr(msg);
 }
 
 static void
-reposition_cursor(void) {
-    struct Line *line = doc->data + framebeg;
+reposition_cursor(struct Editor *edp) {
+    struct Line *line = edp->doc->data + edp->framebeg;
     int lines = 0;
     int rest;
     int y;
     int x;
 
-    while (line < doc->data + cursy) {
-        lines += count_nlines(line);
-        ++line;
+    while (line < edp->doc->data + edp->cursy) {
+        lines += count_nlines(edp, line);
+        line++;
     }
-    rest = count_render_width_upto(line, cursx);
-    y = lines + rest / winx;
-    x = rest % winx;
+    rest = count_render_width_upto(&edp->win, line, edp->cursx);
+    y = lines + rest / edp->win.x;
+    x = rest % edp->win.x;
     move(y, x);
 }
 
 static enum EFILE
-load_file_utf8(const char *fname) {
+load_file_utf8(struct Editor *edp, const char *fname) {
     enum EFILE err = OK;
     struct Line linebuf = { 0, 0, 0 };
     unsigned char filebuf[4096];
@@ -1353,7 +1368,7 @@ load_file_utf8(const char *fname) {
                 goto FAILREAD;
             }
             unlikely_if_(ch == L'\n') {
-                insert_doc(doc->size, &linebuf, 1);
+                insert_doc(&edp->doc, edp->doc->size, &linebuf, 1);
                 linebuf.size = 0;
                 linebuf.alloc = 0;
                 linebuf.data = NULL;
@@ -1363,7 +1378,7 @@ load_file_utf8(const char *fname) {
         }
     }
     if (linebuf.size != 0) {
-        insert_doc(doc->size, &linebuf, 1);
+        insert_doc(&edp->doc, edp->doc->size, &linebuf, 1);
     }
 FAILREAD:
     fclose(file);
@@ -1405,7 +1420,7 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
         } else if (!is_ascii(str - to_add, to_add) ||
                    size + to_add > SMALL_STR) {
             xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
-            for (int i = 0; i < size; ++i) {
+            for (int i = 0; i < size; i++) {
                 own[i] = diff->content[i];
             }
             diff->data = own;
@@ -1416,7 +1431,7 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
             }
             diff->type = DIFF_TYPE_DELCHR;
         } else {
-            for (int i = size; i < to_add + size; ++i) {
+            for (int i = size; i < to_add + size; i++) {
                 diff->content[i] = (unsigned char)*beg;
                 beg--;
             }
@@ -1431,14 +1446,14 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
             memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
         } else if (!is_ascii(str, to_add) || size + to_add > SMALL_STR) {
             xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
-            for (int i = 0; i < size; ++i) {
+            for (int i = 0; i < size; i++) {
                 own[i] = diff->content[i];
             }
             diff->data = own;
             memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
             diff->type = DIFF_TYPE_ADDCHR;
         } else {
-            for (int i = size; i < to_add + size; ++i) {
+            for (int i = size; i < to_add + size; i++) {
                 diff->content[i] = (unsigned char)*beg;
                 beg++;
             }
@@ -1448,7 +1463,8 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
 }
 
 static void
-save_file_utf8(struct LineArr *doc, struct FileInfo *info) {
+save_file_utf8(struct LineArr *doc, struct FileInfo *info,
+               struct DiffStk *diffstk) {
     const char *fname = info->fname;
     unsigned char buf[4 * 4096 + 1];
     FILE *fout = fopen(fname, "w");
@@ -1494,10 +1510,10 @@ save_file_utf8(struct LineArr *doc, struct FileInfo *info) {
         buf[i] = '\n';
         i += 1;
         fwrite(buf, sizeof(*buf), i, fout);
-        ++line;
+        line++;
     }
     fclose(fout);
-    curr_save_point = diffstk->curr;
+    diffstk->curr_save_point = diffstk->curr;
 }
 
 static char *
@@ -1506,9 +1522,7 @@ mkstr_nmt(const char *fmt, ...) {
     va_list vl;
 
     va_start(vl, fmt);
-
     vsnprintf(strbuf, SSTR_SIZE, fmt, vl);
-
     return strbuf;
 }
 
@@ -1523,9 +1537,9 @@ wmkstr_nmt(const wchar_t *fmt, ...) {
 }
 
 static int
-move_to_word(const lchar_t *str, long size) {
-    struct Line *line = doc->data + cursy;
-    lchar_t *cur = line->data + cursx + 1;
+move_to_word(struct Editor *edp, const lchar_t *str, long size) {
+    struct Line *line = edp->doc->data + edp->cursy;
+    lchar_t *cur = line->data + edp->cursx + 1;
     lchar_t *end = line->data + line->size - size + 1;
 
     if (line->size - size + 1 > 0) {
@@ -1534,13 +1548,13 @@ move_to_word(const lchar_t *str, long size) {
                 continue;
             }
             if (memcmp(cur, str, size * sizeof(*str)) == 0) {
-                cursx = cur - line->data;
+                edp->cursx = cur - line->data;
                 return 0;
             }
         }
     }
-    for (int i = 1; i < doc->size + 1; ++i) {
-        line = doc->data + (cursy + i) % doc->size;
+    for (int i = 1; i < edp->doc->size + 1; i++) {
+        line = edp->doc->data + (edp->cursy + i) % edp->doc->size;
         cur = line->data;
         end = line->data + line->size - size + 1;
 
@@ -1552,8 +1566,8 @@ move_to_word(const lchar_t *str, long size) {
                 continue;
             }
             if (memcmp(cur, str, size * sizeof(*str)) == 0) {
-                cursy = line - doc->data;
-                cursx = cur - line->data;
+                edp->cursy = line - edp->doc->data;
+                edp->cursx = cur - line->data;
                 return 0;
             }
         }
@@ -1562,12 +1576,12 @@ move_to_word(const lchar_t *str, long size) {
 }
 
 static int
-usr_quit(void) {
+usr_quit(struct Editor *edp) {
     const char *msg;
     lint_t ch;
-    if (diffstk->curr != curr_save_point) {
-        msg = mkstr_nmt("Save changes to %s? (ynC):", fileinfo.fname);
-        move(winy, 0);
+    if (edp->diffstk->curr != edp->diffstk->curr_save_point) {
+        msg = mkstr_nmt("Save changes to %s? (ynC):", edp->fileinfo.fname);
+        move(edp->win.y, 0);
         clrtoeol();
         addstr(msg);
         do {
@@ -1579,7 +1593,7 @@ usr_quit(void) {
         switch (ch) {
         case 'Y':
         case 'y':
-            save_file_utf8(doc, &fileinfo);
+            save_file_utf8(edp->doc, &edp->fileinfo, edp->diffstk);
             return 0;
         case 'N':
         case 'n':
@@ -1594,13 +1608,13 @@ usr_quit(void) {
 }
 
 static int
-line_ed(const char *msg, struct Line *line) {
+line_ed(struct Window *win, const char *msg, struct Line *line) {
     int posx = line->size;
     int offx = strlen(msg);
     lint_t in;
     lchar_t ch;
 
-    move(winy, 0);
+    move(win->y, 0);
     clrtoeol();
     addstr(msg);
     addnwstr(line->data, line->size);
@@ -1642,10 +1656,10 @@ line_ed(const char *msg, struct Line *line) {
             }
             break;
         }
-        move(winy, offx);
+        move(win->y, offx);
         clrtoeol();
         addnwstr(line->data, line->size);
-        move(winy, offx + count_render_width_upto(line, posx));
+        move(win->y, offx + count_render_width_upto(win, line, posx));
     }
     return 0;
 }
