@@ -1,4 +1,4 @@
-// gcc self -g -O0 $(pkg-config --libs ncursesw) -o ste -pedantic -Wall -Wextra -fopenmp
+// gcc self -g -O0 $(pkg-config --libs ncursesw) -o ste -pedantic -Wall -Wextra
 
 #define _XOPEN_SOURCE 700
 #include <assert.h>
@@ -67,7 +67,7 @@ enum DIFF_TYPE {
     DIFF_TYPE_INLINE = DIFF_TYPE_DELCHR_SMALL,
     DIFF_TYPE_ADDCHR,
     DIFF_TYPE_DELCHR,
-    // DIFF_TYPE_SUB,
+    DIFF_TYPE_SUBSTCK,
 };
 
 struct __attribute__((packed)) Diff {
@@ -80,6 +80,7 @@ struct __attribute__((packed)) Diff {
     union __attribute__((packed)) {
         unsigned char content[SMALL_STR];
         lchar_t *data;
+        struct DiffStk *diff_sub;
         filt_fn_t fil;
     };
 };
@@ -134,6 +135,14 @@ struct FileInfo {
     char *fname;
 };
 
+struct Selection {
+    // xend and yend values are excluded
+    int xbeg;
+    int xend;
+    int ybeg;
+    int yend;
+};
+
 struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
@@ -157,10 +166,12 @@ static filt_fn_t filts[] = {
 };
 
 static int always(lint_t);
+static void show_keymap(void);
 static void diffstk_incr(struct DiffStk *);
 static void diffstk_reserve(struct DiffStk **);
 static void diffstk_insert_addbk(struct Editor *, int, int);
 static void diffstk_insert_delbk(struct Editor *, int, int);
+static void diffstk_free_all(struct DiffStk *);
 static int eq_bigch(struct Diff *, enum DIFF_TYPE);
 static void diffstk_insert_span(struct Editor *, lchar_t *, int);
 static void insert_doc(struct LineArr **, int, struct Line *, int);
@@ -188,6 +199,7 @@ static int move_up_natural(struct Editor *);
 static void diff_apply_brk(struct Editor *, struct Diff *, enum DIREC);
 static void diff_apply_chr(struct Editor *, struct Diff *, enum DIREC);
 static int diffstk_apply_last(struct Editor *, enum DIREC);
+static int diffstk_apply_all(struct Editor *, struct DiffStk *, enum DIREC );
 static void save_current(struct LineArr *, struct FileInfo *,
                          struct DiffStk *);
 static int handle_input(struct Editor *, lint_t);
@@ -217,11 +229,17 @@ static int move_to_word(struct Editor *, const lchar_t *str, long size);
 static int line_ed(struct Window *win, const char *, struct Line *);
 static void line_remove_span(struct Line *, int, int);
 
+static int simple_replace_word(struct Editor *, struct Selection *, lchar_t *,
+                               int, lchar_t *, int);
+
 static void
 diffstk_incr(struct DiffStk *diffstk) {
     if (diffstk->curr < diffstk->size) {
         for (int i = diffstk->curr; i < diffstk->size; i++) {
             if (diffstk->data[i].type > DIFF_TYPE_INLINE) {
+                unlikely_if_(diffstk->data[i].type == DIFF_TYPE_SUBSTCK) {
+                    diffstk_free_all(diffstk->data[i].diff_sub);
+                }
                 free(diffstk->data[i].data);
                 diffstk->data[i].type = 0;
             }
@@ -789,8 +807,8 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
     edp->cursy = diff->y;
     line = &edp->doc->data[edp->cursy];
 
-    if ((eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL) ^ (direc == DIREC_FORW)) ==
-        0) {
+    if ((eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL) ^ (direc == DIREC_FORW))
+        == 0) {
         if (direc == DIREC_FORW) {
             to = line->data + edp->cursx;
             beg = line->data + edp->cursx + diff->size;
@@ -840,7 +858,6 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 static int
 diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
     struct Diff *diff = edp->diffstk->data + edp->diffstk->curr - 1;
-    int err = 0;
     int delta;
 
     if (direc == DIREC_FORW) {
@@ -859,8 +876,7 @@ diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
     }
     switch (diff->type) {
     default:
-        err = -1;
-        break;
+        return -1;
     case DIFF_TYPE_ADDBRK:
     case DIFF_TYPE_DELBRK:
         diff_apply_brk(edp, diff, direc);
@@ -871,9 +887,68 @@ diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
     case DIFF_TYPE_DELCHR_SMALL:
         diff_apply_chr(edp, diff, direc);
         break;
+    case DIFF_TYPE_SUBSTCK:
+        diffstk_apply_all(edp, diff->diff_sub, direc);
+        break;
     }
     edp->diffstk->curr += delta;
-    return err;
+    return 0;
+}
+
+static int
+diffstk_apply_all(struct Editor *edp, struct DiffStk *ds, enum DIREC direc) {
+    int delta;
+    struct Diff *curr;
+    struct Diff *end;
+
+    if (ds->size == 0) {
+        return -1;
+    }
+    if (direc == DIREC_FORW) {
+        delta = -1;
+        curr = ds->data + ds->size - 1;
+        end = ds->data - 1;
+    } else {
+        delta = 1;
+        curr = ds->data;
+        end = ds->data + ds->size;
+    }
+    while (curr != end) {
+        switch (curr->type) {
+        default:
+        case DIFF_TYPE_ADDBRK:
+        case DIFF_TYPE_DELBRK:
+            diff_apply_brk(edp, curr, direc);
+            break;
+        case DIFF_TYPE_ADDCHR:
+        case DIFF_TYPE_ADDCHR_SMALL:
+        case DIFF_TYPE_DELCHR:
+        case DIFF_TYPE_DELCHR_SMALL:
+            diff_apply_chr(edp, curr, direc);
+            break;
+        case DIFF_TYPE_SUBSTCK:
+            diffstk_apply_all(edp, curr->diff_sub, direc);
+            break;
+        }
+        curr += delta;
+    }
+    return 0;
+}
+
+static void
+diffstk_free_all(struct DiffStk *ds) {
+    struct Diff *curr = ds->data;
+    struct Diff *end = ds->data + ds->size;
+
+    for (; curr != end; curr++) {
+        if (curr->type <= DIFF_TYPE_INLINE) {
+            continue;
+        }
+        if (curr->type == DIFF_TYPE_SUBSTCK) {
+            diffstk_free_all(curr->diff_sub);
+        }
+        free(curr->data);
+    }
 }
 
 static void
@@ -897,6 +972,13 @@ handle_input(struct Editor *edp, lint_t c) {
     assert(edp->cursx <= line->size);
 
     switch (ch) {
+    default:
+        if (iswprint(ch) || ch == L'\t') {
+            diffstk_insert_span(edp, &ch, 1);
+            line_insert(line, edp->cursx, &ch, 1);
+            edp->cursx++;
+        }
+        break;
     case KEY_CTRL_CANC:
         return 0;
     case L'\n':
@@ -1049,11 +1131,13 @@ handle_input(struct Editor *edp, lint_t c) {
         reposition_cursor(edp);
         refresh();
         break;
-    default:
-        if (iswprint(ch) || ch == L'\t') {
-            diffstk_insert_span(edp, &ch, 1);
-            line_insert(line, edp->cursx, &ch, 1);
-            edp->cursx++;
+
+    case 8:
+        key = keyname(ch);
+        if (strcmp(key, "^H") == 0) {
+            show_keymap();
+            lint_t ignore;
+            get_wch(&ignore);
         }
         break;
     }
@@ -1265,16 +1349,11 @@ render_editor_info(struct Editor *edp) {
     if (edp->win.y < 2) {
         return;
     }
-    msg = wmkstr_nmt(L"file: %s"
-                     "\t\t\t"
-                     "#: %.*ls"
-                     "\t\t\t"
-                     "%d,%d"
-                     "\t"
-                     "%lld%%",
-                     edp->fileinfo.fname, edp->search_word.size,
-                     edp->search_word.data, edp->cursy + 1, edp->cursx + 1,
-                         (edp->cursy + 1) * 100 / edp->doc->size);
+    msg = wmkstr_nmt(L"file: %s\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
+                     edp->fileinfo.fname,
+                     edp->search_word.size, edp->search_word.data,
+                     edp->cursy + 1, edp->cursx + 1,
+                     (edp->cursy + 1) * 100 / edp->doc->size);
     move(edp->win.y, 0);
     addwstr(msg);
 }
@@ -1663,3 +1742,108 @@ line_ed(struct Window *win, const char *msg, struct Line *line) {
     }
     return 0;
 }
+
+static void
+show_keymap(void) {
+    clear();
+    mvaddstr(0, 0,
+       "\nHELP (KEYMAP)"
+       "\n"
+       "\n    CTRL+CANC: Quit without saving"
+       "\n    CTRL+{UP, DOWN, LEFT RIGHT}: Natural Movement"
+       "\n    CTRL+{PGUP PGDOWN}: "
+       "\n    CTRL+W: Delete one word"
+       "\n    CTRL+R: Undo last action"
+       "\n    CTRL+S: Save current document"
+       "\n    CTRL+Q: Quit"
+       "\n    CTRL+X: Save"
+       "\n    CTRL+/: Find a word"
+       "\n    CTRL+N: Find next"
+       "\n"
+       "\nHELP (END)"
+       "\n"
+       "\n"
+    ); 
+}
+
+static int
+simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
+                    int size, lchar_t *nstr, int nsize) {
+    int found = 0;
+    int ycurr = selct->ybeg;
+    struct Editor sub = {
+        .doc = edp->doc,
+        .diffstk = NULL,
+    };
+    struct Editor *subp = &sub;
+    lchar_t *ccurr; 
+    int xcurr = selct->xbeg;
+    int xend_curr;
+    long long pos;
+    struct Diff *dcurr;
+
+    assert(edp->doc->size > selct->ybeg);
+    assert(edp->doc->size >= selct->yend);
+
+    xrealloc_arr(&subp->diffstk, INIT_DIFF);
+    memset(subp->diffstk, 0, sizeof(*subp->diffstk));
+    subp->diffstk->alloc = INIT_DIFF;
+
+    unlikely_if_(size == 0) {
+        return 0;
+    }
+    while (ycurr < selct->yend) {
+        likely_if_(ycurr != selct->ybeg) {
+            xcurr = 0;
+        }
+        likely_if_(ycurr != selct->yend - 1) {
+            xend_curr = subp->doc->data[ycurr].size;
+        } else {
+            xend_curr = selct->xend;
+            assert(selct->xend <= subp->doc->data[ycurr].size);
+        }
+        unlikely_if_(subp->doc->data[ycurr].size < size) {
+            ycurr++;
+            continue;
+        }
+        ccurr = &subp->doc->data[ycurr].data[xcurr];
+        while (xcurr < xend_curr - size + 1) {
+            if (ccurr[xcurr] == *str) {
+                if (memcmp(ccurr + xcurr, str, size * sizeof(*str)) == 0) {
+                    found = 1;
+                    subp->cursx = xcurr + size;
+                    subp->cursy = ycurr;
+                    line_remove_span_qdiff(subp, &subp->doc->data[ycurr],
+                                           xcurr + size, -size);
+                    xend_curr -= size + nsize;
+                    subp->cursx -= size;
+
+                    if (nsize != 0) {
+                        diffstk_insert_span(subp, nstr, nsize);
+                        line_insert(&subp->doc->data[ycurr], subp->cursx, nstr,
+                                    nsize);
+                        subp->cursx += nsize;
+                    }
+                    continue;
+                }
+            }
+            xcurr++;
+        }
+        ycurr++;
+    }
+    if (found == 0) {
+        free(subp->diffstk);
+    } else {
+        xrealloc_arr(&subp->diffstk, subp->diffstk->size);
+        subp->diffstk->alloc = subp->diffstk->size;
+
+        diffstk_reserve(&edp->diffstk);
+        pos   = edp->diffstk->curr;
+        dcurr = edp->diffstk->data + pos;
+        diffstk_incr(edp->diffstk);
+        dcurr->type = DIFF_TYPE_SUBSTCK;
+        dcurr->diff_sub = subp->diffstk;
+    }
+    return found;
+}
+
