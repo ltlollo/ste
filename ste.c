@@ -18,14 +18,15 @@
 #define _XOPEN_SOURCE_EXTENDED
 #include <ncursesw/ncurses.h>
 
-#define TAB_SIZE    8
-#define SMALL_STR   8
-#define INIT_DIFF   4096
-#define INIT_DOC    1024
-#define INIT_LINE   16
-#define SSTR_SIZE   128
+#define TAB_SIZE        8
+#define SMALL_STR       8
+#define INIT_DIFF       4096
+#define INIT_SUBDIFF    128
+#define INIT_DOC        1024
+#define INIT_LINE       16
+#define SSTR_SIZE       128
 
-#define MAX_DIFF_SIZE 0x1fffffff
+#define MAX_DIFF_SIZE   0x1fffffff
 
 #define KEY_SHIFT_DOWN  336
 #define KEY_SHIFT_UP    337
@@ -125,6 +126,12 @@ enum TERN {
     TERN_CANC,
 };
 
+enum MODE {
+    MODE_NORMAL,
+    MODE_SELECT,
+    MODE_SEARCH,
+};
+
 struct Window {
     int y;
     int x;
@@ -153,6 +160,7 @@ struct Editor {
     struct Line search_word;
     struct Line filename;
     struct FileInfo fileinfo;
+    enum MODE mode;
 };
 
 static int
@@ -272,6 +280,10 @@ diffstk_insert_addbk(struct Editor *edp, int y, int x) {
     struct Diff *curr;
     struct Diff *prev;
 
+    unlikely_if_(edp->mode != MODE_NORMAL) {
+        return;
+    }
+
     diffstk_reserve(&edp->diffstk);
 
     pos  = edp->diffstk->curr;
@@ -301,6 +313,10 @@ diffstk_insert_delbk(struct Editor *edp, int y, int x) {
     long long pos;
     struct Diff *curr;
     struct Diff *prev;
+
+    unlikely_if_(edp->mode != MODE_NORMAL) {
+        return;
+    }
 
     diffstk_reserve(&edp->diffstk);
 
@@ -349,6 +365,10 @@ diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta) {
     lchar_t sample;
     filt_fn_t curr_fil;
     filt_fn_t prev_fil;
+
+    unlikely_if_(edp->mode != MODE_NORMAL) {
+        return;
+    }
 
     diffstk_reserve(&edp->diffstk);
 
@@ -1778,16 +1798,20 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
     struct Editor *subp = &sub;
     lchar_t *ccurr; 
     int xcurr = selct->xbeg;
-    int xend_curr;
+    int xend;
     long long pos;
     struct Diff *dcurr;
+
+    unlikely_if_(edp->mode != MODE_NORMAL) {
+        return -1;
+    }
 
     assert(edp->doc->size > selct->ybeg);
     assert(edp->doc->size >= selct->yend);
 
-    xrealloc_arr(&subp->diffstk, INIT_DIFF);
+    xrealloc_arr(&subp->diffstk, INIT_SUBDIFF);
     memset(subp->diffstk, 0, sizeof(*subp->diffstk));
-    subp->diffstk->alloc = INIT_DIFF;
+    subp->diffstk->alloc = INIT_SUBDIFF;
 
     unlikely_if_(size == 0) {
         return 0;
@@ -1797,9 +1821,9 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
             xcurr = 0;
         }
         likely_if_(ycurr != selct->yend - 1) {
-            xend_curr = subp->doc->data[ycurr].size;
+            xend = subp->doc->data[ycurr].size;
         } else {
-            xend_curr = selct->xend;
+            xend = selct->xend;
             assert(selct->xend <= subp->doc->data[ycurr].size);
         }
         unlikely_if_(subp->doc->data[ycurr].size < size) {
@@ -1807,7 +1831,7 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
             continue;
         }
         ccurr = &subp->doc->data[ycurr].data[xcurr];
-        while (xcurr < xend_curr - size + 1) {
+        while (xcurr < xend - size + 1) {
             if (ccurr[xcurr] == *str) {
                 if (memcmp(ccurr + xcurr, str, size * sizeof(*str)) == 0) {
                     found = 1;
@@ -1815,7 +1839,6 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
                     subp->cursy = ycurr;
                     line_remove_span_qdiff(subp, &subp->doc->data[ycurr],
                                            xcurr + size, -size);
-                    xend_curr -= size + nsize;
                     subp->cursx -= size;
 
                     if (nsize != 0) {
@@ -1824,6 +1847,7 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
                                     nsize);
                         subp->cursx += nsize;
                     }
+                    xend -= size + nsize;
                     continue;
                 }
             }
