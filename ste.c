@@ -24,6 +24,7 @@
 #define INIT_SUBDIFF    128
 #define INIT_DOC        1024
 #define INIT_LINE       16
+#define INIT_SEARCH     128
 #define SSTR_SIZE       128
 
 #define MAX_DIFF_SIZE   0x1fffffff
@@ -150,18 +151,19 @@ struct Selection {
     int yend;
 };
 
-struct Editor {
+typedef struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
     int cursy;
     int cursx;
     int framebeg;
     struct Window win;
-    struct Line search_word;
+    struct Line *search_word;
     struct Line filename;
     struct FileInfo fileinfo;
     enum MODE mode;
-};
+    struct Editor *search;
+} Editor;
 
 static int
 always(lint_t p) {
@@ -234,11 +236,11 @@ static char * mkstr_nmt(const char *, ...);
 static wchar_t *wmkstr_nmt(const wchar_t *, ...);
 static int usr_quit(struct Editor *);
 static int move_to_word(struct Editor *, const lchar_t *str, long size);
-static int line_ed(struct Window *win, const char *, struct Line *);
 static void line_remove_span(struct Line *, int, int);
 
 static int simple_replace_word(struct Editor *, struct Selection *, lchar_t *,
                                int, lchar_t *, int);
+static struct Editor *load_search_history(void);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -632,6 +634,23 @@ init_editor(struct Editor *edp, const char *fname) {
 
     open_win(edp);
     atexit(close_win);
+
+    edp->search = load_search_history();
+}
+
+static struct Editor*
+load_search_history(void) {
+    static Editor search;
+
+    xrealloc_arr(&search.doc, INIT_SEARCH);
+
+    memset(search.doc, 0,
+           sizeof(struct LineArr) + sizeof(*search.doc->data) * INIT_SEARCH);
+    search.doc->alloc = INIT_SEARCH;
+    search.doc->size = 1;
+    search.mode = MODE_SEARCH;
+
+    return &search;
 }
 
 static int
@@ -670,6 +689,9 @@ del_back(struct Editor *edp) {
         return -1;
     }
     if (edp->cursx == 0) {
+        if (edp->mode != MODE_NORMAL) {
+            return -1;
+        }
         edp->cursy--;
         line = &edp->doc->data[edp->cursy];
         edp->cursx = line->size;
@@ -987,6 +1009,7 @@ handle_input(struct Editor *edp, lint_t c) {
     int rest;
     lchar_t ch = c;
     const char *key;
+    lint_t subch;
 
     assert(edp->cursy < edp->doc->size);
     assert(edp->cursx <= line->size);
@@ -1002,12 +1025,31 @@ handle_input(struct Editor *edp, lint_t c) {
     case KEY_CTRL_CANC:
         return 0;
     case L'\n':
+        if (edp->mode != MODE_NORMAL) {
+            if (edp->cursx == 0) {
+                if (edp->cursy != edp->doc->size - 1) {
+                    line = edp->doc->data + edp->cursy;
+                    edp->cursx = line->size;
+                    merge_lines(edp->doc, edp->cursy);
+                    edp->cursy = edp->doc->size - 1;
+                    edp->cursx = 0;
+                    edp->search_word = NULL;
+                }
+            } else {
+                edp->search_word = edp->doc->data + edp->cursy;
+                insert_doc(&edp->doc, edp->doc->size, &own, 1);
+                edp->cursy = edp->doc->size - 1;
+                edp->cursx = 0;
+            }
+            return 0;
+        }
         diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
         line_insert(&own, 0, line->data + edp->cursx, line->size - edp->cursx);
         insert_doc(&edp->doc, edp->cursy + 1, &own, 1);
         line->size = edp->cursx;
         edp->cursx = 0;
         edp->cursy++;
+
         break;
     case KEY_RIGHT:
         move_right(edp);
@@ -1112,19 +1154,48 @@ handle_input(struct Editor *edp, lint_t c) {
     case 31:
         key = keyname(ch);
         if (strcmp(key, "^_") == 0) {
-            line_ed(&edp->win, "search: ", &edp->search_word);
-            if (edp->search_word.size) {
-                move_to_word(edp, edp->search_word.data,
-                             edp->search_word.size);
+            if (edp->mode != MODE_NORMAL) {
+                break;
+            }
+
+            edp->search->win.x = edp->win.x;
+            edp->search->win.y = edp->win.y;
+
+            move(edp->win.y, 0);
+            clrtoeol();
+            addstr("search: ");
+            line = &edp->search->doc->data[edp->search->cursy];
+            addnwstr(line->data, line->size);
+            do {
+                if (get_wch(&subch) == ERR) {
+                    break;
+                }
+                if (handle_input(edp->search, subch) == 0) {
+                    break;
+                }
+                move(edp->win.y, arrsize("search: ") - 1);
+                clrtoeol();
+                line = &edp->search->doc->data[edp->search->cursy];
+                addnwstr(line->data, line->size);
+                move(edp->win.y, arrsize("search: ") - 1 +
+                     count_render_width_upto(&edp->win, line,
+                                             edp->search->cursx));
+            } while (1);
+
+            edp->search_word = edp->search->search_word;
+
+            if (edp->search_word && edp->search_word->size) {
+                move_to_word(edp, edp->search_word->data,
+                             edp->search_word->size);
             }
         }
         break;
     case 14:
         key = keyname(ch);
         if (strcmp(key, "^N") == 0) {
-            if (edp->search_word.size) {
-                move_to_word(edp, edp->search_word.data,
-                             edp->search_word.size);
+            if (edp->search_word && edp->search_word->size) {
+                move_to_word(edp, edp->search_word->data,
+                             edp->search_word->size);
             }
         }
         break;
@@ -1365,13 +1436,20 @@ render_lines(struct Editor *edp) {
 static void
 render_editor_info(struct Editor *edp) {
     static wchar_t *msg;
+    int size = 0;
+    lchar_t *str = L"";
 
     if (edp->win.y < 2) {
         return;
     }
+    if (edp->search_word) {
+        str = edp->search_word->data;
+        size = edp->search_word->size;
+    }
     msg = wmkstr_nmt(L"file: %s\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
                      edp->fileinfo.fname,
-                     edp->search_word.size, edp->search_word.data,
+                     size, str,
+                     //edp->search_word->size, edp->search_word->data,
                      edp->cursy + 1, edp->cursx + 1,
                      (edp->cursy + 1) * 100 / edp->doc->size);
     move(edp->win.y, 0);
@@ -1702,63 +1780,6 @@ usr_quit(struct Editor *edp) {
         case 'c':
             return 1;
         }
-    }
-    return 0;
-}
-
-static int
-line_ed(struct Window *win, const char *msg, struct Line *line) {
-    int posx = line->size;
-    int offx = strlen(msg);
-    lint_t in;
-    lchar_t ch;
-
-    move(win->y, 0);
-    clrtoeol();
-    addstr(msg);
-    addnwstr(line->data, line->size);
-
-    while (1) {
-        if (get_wch(&in) == ERR) {
-            return -1;
-        }
-        ch = in;
-        switch (ch) {
-        case KEY_DC:
-            if (posx != line->size) {
-                line_remove_span(line, posx + 1, -1);
-            }
-            break;
-        case KEY_BACKSPACE:
-            if (posx) {
-                line_remove_span(line, posx, -1);
-                posx--;
-            }
-            break;
-        case KEY_RIGHT:
-            if (posx < line->size) {
-                posx++;
-            }
-            break;
-        case KEY_LEFT:
-            if (posx) {
-                posx--;
-            }
-            break;
-        case KEY_CTRL_CANC:
-        case '\n':
-            return 0;
-        default:
-            if (iswprint(ch) || ch == L'\t') {
-                line_insert(line, posx, &ch, 1);
-                posx++;
-            }
-            break;
-        }
-        move(win->y, offx);
-        clrtoeol();
-        addnwstr(line->data, line->size);
-        move(win->y, offx + count_render_width_upto(win, line, posx));
     }
     return 0;
 }
