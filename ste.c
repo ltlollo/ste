@@ -77,22 +77,22 @@ enum OPT {
     OPT_SHOW_LINENO,
 };
 
-struct __attribute__((packed)) Diff {
-    struct __attribute__((packed)) {
+struct Diff {
+    struct {
         enum DIFF_TYPE type : 3;
         unsigned size : 29;
         int y;
         int x;
-    };
-    union __attribute__((packed)) {
+    } __attribute__((packed));
+    union {
         unsigned char content[SMALL_STR];
         lchar_t *data;
         struct DiffStk *diff_sub;
         filt_fn_t fil;
-    };
-};
-_Static_assert(sizeof(struct Diff) == 12 + SMALL_STR,
-               "unsupported architecture");
+    } __attribute__((packed));
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct Diff) == 12 + SMALL_STR, "unsupported arch");
 
 struct Line {
     long long size;
@@ -152,9 +152,7 @@ struct FileInfo {
 };
 
 struct Selection {
-    // xend and yend values are excluded
-    int xbeg;
-    int xend;
+    // yend values are excluded
     int ybeg;
     int yend;
 };
@@ -172,6 +170,7 @@ typedef struct Editor {
     enum MODE mode;
     enum OPT opt;
     struct Editor *search;
+    struct Selection selct;
 } Editor;
 
 static int
@@ -253,7 +252,7 @@ static struct Editor *load_search_history(void);
 static void move_brush(struct Editor *, int, int);
 static void clear_window(struct Editor *);
 static int num_digits(int, int);
-static void paint_string(struct Editor *, lchar_t *, int, int);
+static void paint_string(struct Editor *, lchar_t *, int, int, int);
 static int calc_padlx(struct Editor *);
 static void calc_window_size(struct Editor *);
 
@@ -1072,7 +1071,6 @@ handle_input(struct Editor *edp, lint_t c) {
         line->size = edp->cursx;
         edp->cursx = 0;
         edp->cursy++;
-
         break;
     case KEY_RIGHT:
         move_right(edp);
@@ -1451,7 +1449,7 @@ render_lines(struct Editor *edp) {
             end = render_max_given_width(&edp->win, end,
                                          curr_line->data + curr_line->size,
                                          edp->win.x);
-            paint_string(edp, beg, end - beg, edp->cursy);
+            paint_string(edp, beg, end - beg, edp->cursy, beg - line->data);
         }
         return;
     }
@@ -1465,7 +1463,7 @@ render_lines(struct Editor *edp) {
             end = render_max_given_width(&edp->win, end,
                                          line->data + line->size,
                                          edp->win.x);
-            paint_string(edp, beg, end - beg, line - dbeg);
+            paint_string(edp, beg, end - beg, line - dbeg, beg - line->data);
             lines++;
         }
         line++;
@@ -1861,13 +1859,19 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
     };
     struct Editor *subp = &sub;
     lchar_t *ccurr; 
-    int xcurr = selct->xbeg;
+    int xcurr = 0;
     int xend;
     long long pos;
     struct Diff *dcurr;
 
     unlikely_if_(edp->mode != MODE_NORMAL) {
         return -1;
+    }
+
+    assert(selct->ybeg <= selct->yend);
+    if (selct->ybeg == selct->yend) {
+        // correct, operate on excluded range
+        return 0;
     }
 
     assert(edp->doc->size > selct->ybeg);
@@ -1881,15 +1885,9 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
         return 0;
     }
     while (ycurr < selct->yend) {
-        likely_if_(ycurr != selct->ybeg) {
-            xcurr = 0;
-        }
-        likely_if_(ycurr != selct->yend - 1) {
-            xend = subp->doc->data[ycurr].size;
-        } else {
-            xend = selct->xend;
-            assert(selct->xend <= subp->doc->data[ycurr].size);
-        }
+        xcurr = 0;
+        xend = subp->doc->data[ycurr].size;
+
         unlikely_if_(subp->doc->data[ycurr].size < size) {
             ycurr++;
             continue;
@@ -1971,11 +1969,27 @@ calc_padlx(struct Editor *edp) {
 }
 
 static void
-paint_string(struct Editor *edp, lchar_t *str, int size, int lineno) {
+paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
+    (void)x;
+
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
-        printw("%*d ", edp->win.offx - 1, lineno + 1);
+        printw("%*d ", edp->win.offx - 1, y + 1);
     } else if (edp->mode == MODE_SEARCH) {
         addstr("search: ");
     }
-    addnwstr(str, size);
+    if (edp->mode != MODE_SELECT) {
+        addnwstr(str, size);
+    } else {
+        int notincl = edp->selct.ybeg >= edp->selct.yend;
+        if (notincl ^ (y >= edp->selct.ybeg && y < edp->selct.yend)) {
+            attron(A_REVERSE);
+            addnwstr(str, size);
+            attroff(A_REVERSE);
+        } else {
+            addnwstr(str, size);
+        }
+    }
 }
+
+
+// Select range 5 - 6 => l5 | 5 - 5 => 0 - 4, 6-end
