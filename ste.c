@@ -246,8 +246,6 @@ static int usr_quit(struct Editor *);
 static int move_to_word(struct Editor *, const lchar_t *str, long size);
 static void line_remove_span(struct Line *, int, int);
 
-static int simple_replace_word(struct Editor *, struct Selection *, lchar_t *,
-                               int, lchar_t *, int);
 static struct Editor *load_search_history(void);
 static void move_brush(struct Editor *, int, int);
 static void clear_window(struct Editor *);
@@ -255,6 +253,10 @@ static int num_digits(int, int);
 static void paint_string(struct Editor *, lchar_t *, int, int, int);
 static int calc_padlx(struct Editor *);
 static void calc_window_size(struct Editor *);
+static int replace_word_positrange(struct Editor *, struct Selection *,
+                                   lchar_t *, int, lchar_t *, int);
+static int replace_word(struct Editor *, struct Selection *, lchar_t *,
+                        int, lchar_t *, int);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -1848,9 +1850,10 @@ show_keymap(void) {
     ); 
 }
 
+
 static int
-simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
-                    int size, lchar_t *nstr, int nsize) {
+replace_word_positrange(struct Editor *edp, struct Selection *selct,
+                        lchar_t *str, int size, lchar_t *nstr, int nsize) {
     int found = 0;
     int ycurr = selct->ybeg;
     struct Editor sub = {
@@ -1864,16 +1867,13 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
     long long pos;
     struct Diff *dcurr;
 
-    unlikely_if_(edp->mode != MODE_NORMAL) {
+    unlikely_if_(edp->mode != MODE_SELECT) {
         return -1;
     }
-
     assert(selct->ybeg <= selct->yend);
     if (selct->ybeg == selct->yend) {
-        // correct, operate on excluded range
         return 0;
     }
-
     assert(edp->doc->size > selct->ybeg);
     assert(edp->doc->size >= selct->yend);
 
@@ -1931,6 +1931,28 @@ simple_replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
         dcurr->diff_sub = subp->diffstk;
     }
     return found;
+}
+
+static int
+replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
+             int size, lchar_t *nstr, int nsize) {
+    int res;
+    struct Selection f;
+    struct Selection s;
+
+    unlikely_if_(edp->mode != MODE_SELECT) {
+        return -1;
+    }
+    if (selct->ybeg >= selct->yend) {
+        f.ybeg = 0;
+        f.yend = selct->yend;
+        s.ybeg = selct->ybeg;
+        s.yend = edp->doc->size;
+
+        res = replace_word_positrange(edp, &f, str, size, nstr, nsize);
+        return res | replace_word_positrange(edp, &s, str, size, nstr, nsize);
+    }
+    return replace_word_positrange(edp, selct, str, size, nstr, nsize);
 }
 
 static void
@@ -1991,5 +2013,3 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     }
 }
 
-
-// Select range 5 - 6 => l5 | 5 - 5 => 0 - 4, 6-end
