@@ -607,7 +607,7 @@ open_win(struct Editor *edp) {
     intrflush(stdscr, FALSE);
     set_tabsize(TAB_SIZE);
     edp->win.x = COLS;
-    edp->win.y = LINES;
+    edp->win.y = LINES - 1;
     if (edp->win.y > 1) {
         edp->win.y--;
     }
@@ -653,6 +653,9 @@ init_editor(struct Editor *edp, const char *fname) {
     edp->search = load_search_history();
     edp->win.fullx = COLS;
     edp->win.y = LINES;
+    if (edp->win.y > 1) {
+        edp->win.y--;
+    }
     edp->opt = OPT_NONE;
 }
 
@@ -1228,6 +1231,9 @@ handle_input(struct Editor *edp, lint_t c) {
         break;
 
     case 8:
+        if (edp->mode != MODE_NORMAL) {
+            break;
+        }
         key = keyname(ch);
         if (strcmp(key, "^H") == 0) {
             show_keymap();
