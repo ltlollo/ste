@@ -1038,6 +1038,7 @@ handle_input(struct Editor *edp, lint_t c) {
     lchar_t ch = c;
     const char *key;
     int cont;
+    int mode;
 
     assert(edp->cursy < edp->doc->size);
     assert(edp->cursx <= line->size);
@@ -1236,27 +1237,31 @@ handle_input(struct Editor *edp, lint_t c) {
         refresh();
         break;
 
-    case 8:
+    case 39:
         if (edp->mode != MODE_NORMAL) {
             break;
         }
         key = keyname(ch);
-        if (strcmp(key, "^H") == 0) {
+        if (strcmp(key, "^?") == 0) {
             show_keymap();
             lint_t ignore;
             get_wch(&ignore);
         }
         break;
-    case 6:
+    case 8:
         key = keyname(ch);
-        if (strcmp(key, "^F") == 0) {
-            int mode = edp->mode;
-            if (mode != MODE_SELECT_HORIZ) {
+        if (strcmp(key, "^H") == 0) {
+            mode = edp->mode;
+            if (mode == MODE_SELECT_VERT) {
                 edp->mode = MODE_SELECT_HORIZ;
-
                 edp->selct.ybeg = edp->cursy;
                 edp->selct.xbeg = edp->cursx;
-
+                break;
+            }
+            if (mode != MODE_SELECT_HORIZ) {
+                edp->mode = MODE_SELECT_HORIZ;
+                edp->selct.ybeg = edp->cursy;
+                edp->selct.xbeg = edp->cursx;
                 do {
                     cont = render_loop(edp);
                 } while (cont);
@@ -1267,13 +1272,17 @@ handle_input(struct Editor *edp, lint_t c) {
     case 22:
         key = keyname(ch);
         if (strcmp(key, "^V") == 0) {
-            int mode = edp->mode;
-            if (mode != MODE_SELECT_VERT) {
+            mode = edp->mode;
+            if (mode == MODE_SELECT_HORIZ) {
                 edp->mode = MODE_SELECT_VERT;
-
                 edp->selct.ybeg = edp->cursy;
                 edp->selct.xbeg = edp->cursx;
-
+                break;
+            }
+            if (mode != MODE_SELECT_VERT) {
+                edp->mode = MODE_SELECT_VERT;
+                edp->selct.ybeg = edp->cursy;
+                edp->selct.xbeg = edp->cursx;
                 do {
                     cont = render_loop(edp);
                 } while (cont);
@@ -1886,6 +1895,8 @@ show_keymap(void) {
        "\n    CTRL+X: Save"
        "\n    CTRL+/: Find a word"
        "\n    CTRL+N: Find next"
+       "\n    CTRL+H: Horizontal Selection Mode"
+       "\n    CTRL+V: Vertical Selection Mode"
        "\n"
        "\nHELP (END)"
        "\n"
