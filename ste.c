@@ -25,6 +25,7 @@
 #define INIT_DOC        1024
 #define INIT_LINE       16
 #define INIT_SEARCH     128
+#define INIT_COMMAND    128
 #define SSTR_SIZE       128
 
 #define MAX_DIFF_SIZE   0x1fffffff
@@ -43,15 +44,17 @@
 #define KEY_CTRL_PGDOWN 550
 #define KEY_CTRL_PGUP   555
 
-#define min(a, b) ((a) < (b) ? (a) : (b))
+#define SEARCH_MSG  "search: "
+#define COMMAND_MSG "$: "
+
 #define xrealloc_arr(p, size)                                                 \
     xrealloc_ptr(p, size, sizeof(*(*p)->data), sizeof(**p))
 
 #define xrealloc_owndata(p, size)                                             \
     xrealloc_ptr(&p->data, size, sizeof(*p->data), 0)
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
 #define arrsize(cx) ((long long)(sizeof(cx) / sizeof(*cx)))
-
 #define expect(x, v) __builtin_expect(x, v)
 #define unlikely(x) expect(!!(x), 0)
 #define likely(x) expect(!!(x), 1)
@@ -135,6 +138,7 @@ enum TERN {
 
 enum MODE {
     MODE_NORMAL,
+    MODE_COMMAND,
     MODE_SEARCH,
     MODE_SELECT_HORIZ,
     MODE_SELECT_VERT,
@@ -168,12 +172,14 @@ typedef struct Editor {
     int cursx;
     int framebeg;
     struct Window win;
-    struct Line *search_word;
+    struct Line *exec_line;
     struct Line filename;
     struct FileInfo fileinfo;
     enum MODE mode;
     enum OPT opt;
     struct Editor *search;
+    struct Editor *command;
+    struct Editor *files;
     struct Selection selct;
 } Editor;
 
@@ -239,6 +245,7 @@ static void reposition_frame(struct Editor *);
 static void render_lines(struct Editor *);
 static void render_editor_info(struct Editor *);
 static void reposition_cursor(struct Editor *);
+static void xinit_doc(struct Editor *, size_t, const char *);
 static enum EFILE load_file_utf8(struct Editor *, const char *);
 static int is_ascii(lchar_t *, int);
 static void diff_insert_span(struct Diff *, lchar_t *, int);
@@ -250,7 +257,8 @@ static int usr_quit(struct Editor *);
 static int move_to_word(struct Editor *, const lchar_t *str, long size);
 static void line_remove_span(struct Line *, int, int);
 
-static struct Editor *load_search_history(void);
+static struct Editor *load_search_history(const char *);
+static struct Editor *load_command_history(const char *);
 static void move_brush(struct Editor *, int, int);
 static void clear_window(struct Editor *);
 static int num_digits(int, int);
@@ -624,31 +632,14 @@ open_win(struct Editor *edp) {
 
 static void
 init_editor(struct Editor *edp, const char *fname) {
-    enum EFILE efile;
-
     setlocale(LC_ALL, "");
 
     xrealloc_arr(&edp->doc, INIT_DOC);
     xrealloc_arr(&edp->diffstk, INIT_DIFF);
 
-    memset(edp->doc, 0,
-           sizeof(struct LineArr) + sizeof(*edp->doc->data) * INIT_DOC);
-    edp->doc->alloc = INIT_DOC;
-    edp->doc->size = 0;
+    xinit_doc(edp, INIT_DOC, fname);
 
     edp->diffstk->curr_save_point = 0;
-
-    efile = load_file_utf8(edp, fname);
-    if (efile != EFILE_OK) {
-        if (efile == EFILE_UTF8) {
-            errx(1, "invalid utf8 content in '%s'", fname);
-        } else if (efile == EFILE_OPEN) {
-            err(1, "fopen '%s'", fname);
-        } else {
-            edp->doc->size = 1;
-        }
-    }
-    edp->fileinfo.fname = strdup(fname);
 
     memset(edp->diffstk, 0,
            sizeof(struct DiffStk) + sizeof(*edp->diffstk->data) * INIT_DIFF);
@@ -658,7 +649,12 @@ init_editor(struct Editor *edp, const char *fname) {
     open_win(edp);
     atexit(close_win);
 
-    edp->search = load_search_history();
+    edp->search = load_search_history(NULL);
+    edp->command = load_command_history(NULL);
+
+    // share search history between command and normal
+    edp->command->search = edp->search;
+
     edp->win.fullx = COLS;
     edp->win.y = LINES;
     if (edp->win.y > 1) {
@@ -671,21 +667,57 @@ init_editor(struct Editor *edp, const char *fname) {
     init_pair(1, COLOR_WHITE, COLOR_RED);
 }
 
+static void
+xinit_doc(struct Editor *edp, size_t sz, const char *fname) {
+    enum EFILE efile;
+
+    xrealloc_arr(&edp->doc, sz);
+    memset(edp->doc, 0, sizeof(struct LineArr) + sizeof(*edp->doc->data) * sz);
+    edp->doc->alloc = sz;
+    edp->doc->size = 0;
+
+    if (fname == NULL) {
+        edp->doc->size = 1;
+        return;
+    }
+    efile = load_file_utf8(edp, fname);
+    if (efile != EFILE_OK) {
+        if (efile == EFILE_UTF8) {
+            errx(1, "invalid utf8 content in '%s'", fname);
+        } else if (efile == EFILE_OPEN) {
+            err(1, "fopen '%s'", fname);
+        } else {
+            edp->doc->size = 1;
+        }
+    }
+    edp->fileinfo.fname = strdup(fname);
+    assert(edp->fileinfo.fname);
+}
+
 static struct Editor*
-load_search_history(void) {
+load_search_history(const char *fname) {
     static Editor search;
 
-    xrealloc_arr(&search.doc, INIT_SEARCH);
+    xinit_doc(&search, INIT_SEARCH, fname);
 
-    memset(search.doc, 0,
-           sizeof(struct LineArr) + sizeof(*search.doc->data) * INIT_SEARCH);
-    search.doc->alloc = INIT_SEARCH;
-    search.doc->size = 1;
     search.mode = MODE_SEARCH;
-
     search.win.y = 1;
+    search.cursy = search.doc->size - 1;
 
     return &search;
+}
+
+static struct Editor*
+load_command_history(const char *fname) {
+    static Editor command;
+
+    xinit_doc(&command, INIT_COMMAND, fname);
+
+    command.mode = MODE_COMMAND;
+    command.win.y = 1;
+    command.cursy = command.doc->size - 1;
+
+    return &command;
 }
 
 static int
@@ -934,6 +966,9 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 
 static int
 diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
+    if (edp->diffstk == NULL) {
+        return -1;
+    }
     struct Diff *diff = edp->diffstk->data + edp->diffstk->curr - 1;
     int delta;
 
@@ -1031,7 +1066,7 @@ diffstk_free_all(struct DiffStk *ds) {
 static void
 save_current(struct LineArr *doc, struct FileInfo *info,
              struct DiffStk *diffstk) {
-    if (diffstk->curr == diffstk->curr_save_point) {
+    if (diffstk && diffstk->curr == diffstk->curr_save_point) {
         return;
     }
     save_file_utf8(doc, info, diffstk);
@@ -1070,7 +1105,7 @@ handle_input(struct Editor *edp, lint_t c) {
     case KEY_CTRL_CANC:
         return 0;
     case L'\n':
-        if (edp->mode == MODE_SEARCH) {
+        if (edp->mode == MODE_SEARCH || edp->mode == MODE_COMMAND) {
             if (edp->cursx == 0) {
                 if (edp->cursy != edp->doc->size - 1) {
                     line = edp->doc->data + edp->cursy;
@@ -1078,10 +1113,10 @@ handle_input(struct Editor *edp, lint_t c) {
                     merge_lines(edp->doc, edp->cursy);
                     edp->cursy = edp->doc->size - 1;
                     edp->cursx = 0;
-                    edp->search_word = NULL;
+                    edp->exec_line = NULL;
                 }
             } else {
-                edp->search_word = edp->doc->data + edp->cursy;
+                edp->exec_line = edp->doc->data + edp->cursy;
                 insert_doc(&edp->doc, edp->doc->size, &own, 1);
                 edp->cursy = edp->doc->size - 1;
                 edp->cursx = 0;
@@ -1210,20 +1245,20 @@ handle_input(struct Editor *edp, lint_t c) {
                 cont = render_loop(edp->search);
             } while (cont);
 
-            edp->search_word = edp->search->search_word;
+            edp->exec_line = edp->search->exec_line;
 
-            if (edp->search_word && edp->search_word->size) {
-                move_to_word(edp, edp->search_word->data,
-                             edp->search_word->size);
+            if (edp->exec_line && edp->exec_line->size) {
+                move_to_word(edp, edp->exec_line->data,
+                             edp->exec_line->size);
             }
         }
         break;
     case 14:
         key = keyname(ch);
         if (strcmp(key, "^N") == 0) {
-            if (edp->search_word && edp->search_word->size) {
-                move_to_word(edp, edp->search_word->data,
-                             edp->search_word->size);
+            if (edp->exec_line && edp->exec_line->size) {
+                move_to_word(edp, edp->exec_line->data,
+                             edp->exec_line->size);
             }
         }
         break;
@@ -1502,6 +1537,7 @@ render_lines(struct Editor *edp) {
     int lines = 0;
     int rest;
 
+    assert(edp->cursy >= 0);
     struct Line *curr_line = &edp->doc->data[edp->cursy];
     int curr_line_size = count_nlines(edp, curr_line);
 
@@ -1552,9 +1588,9 @@ render_editor_info(struct Editor *edp) {
     if (edp->win.y < 2) {
         return;
     }
-    if (edp->search_word) {
-        str = edp->search_word->data;
-        size = edp->search_word->size;
+    if (edp->search->exec_line) {
+        str = edp->search->exec_line->data;
+        size = edp->search->exec_line->size;
     }
     msg = wmkstr_nmt(L"file: %s\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
                      edp->fileinfo.fname,
@@ -1759,6 +1795,10 @@ static void
 save_file_utf8(struct LineArr *doc, struct FileInfo *info,
                struct DiffStk *diffstk) {
     const char *fname = info->fname;
+    if (fname == NULL) {
+        return;
+    }
+
     unsigned char buf[4 * 4096 + 1];
     FILE *fout = fopen(fname, "w");
     struct Line *line = doc->data;
@@ -2132,14 +2172,14 @@ num_digits(int i, int base) {
     return res;
 }
 
-
-
 static int
 calc_padlx(struct Editor *edp) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         return num_digits(edp->doc->size + 1, 10) + 1;
     } else if (edp->mode == MODE_SEARCH) {
-        return arrsize("search: ") - 1;
+        return arrsize(SEARCH_MSG) - 1;
+    } else if (edp->mode == MODE_COMMAND) {
+        return arrsize(COMMAND_MSG) - 1;
     }
     return 0;
 }
@@ -2152,7 +2192,9 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
     } else if (edp->mode == MODE_SEARCH) {
-        addstr("search: ");
+        addstr(SEARCH_MSG);
+    } else if (edp->mode == MODE_COMMAND) {
+        addstr(COMMAND_MSG);
     }
     likely_if_(edp->mode < MODE_SELECT_HORIZ) {
         addnwstr(str, size);
