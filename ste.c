@@ -259,6 +259,9 @@ static int calc_padlx(struct Editor *);
 static void calc_window_size(struct Editor *);
 static int replace_word_positrange(struct Editor *, struct Selection *,
                                    lchar_t *, int, lchar_t *, int);
+static int delete_lines(struct Editor *, struct Selection *);
+static int delete_lines_positrange(struct Editor *, struct Selection *);
+
 static int replace_word(struct Editor *, struct Selection *, lchar_t *,
                         int, lchar_t *, int);
 
@@ -391,7 +394,6 @@ diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta) {
     unlikely_if_(edp->diffstk == NULL) {
         return;
     }
-
     diffstk_reserve(&edp->diffstk);
 
     pos  = edp->diffstk->curr;
@@ -532,6 +534,7 @@ line_remove_span(struct Line *line, int pos, int delta) {
 static void
 line_remove_span_qdiff(struct Editor *edp, struct Line *line,
                        int pos, int delta) {
+    assert(delta);
     diffstk_insert_span(edp, line->data + pos, delta);
     line_remove_span(line, pos, delta);
 }
@@ -662,6 +665,10 @@ init_editor(struct Editor *edp, const char *fname) {
         edp->win.y--;
     }
     edp->opt = OPT_NONE;
+
+    start_color();
+    use_default_colors();
+    init_pair(1, COLOR_WHITE, COLOR_RED);
 }
 
 static struct Editor*
@@ -1045,10 +1052,19 @@ handle_input(struct Editor *edp, lint_t c) {
 
     switch (ch) {
     default:
+        if (edp->mode == MODE_SELECT_HORIZ) {
+            delete_lines(edp, &edp->selct);
+            line = &edp->doc->data[edp->cursy];
+        }
         if (iswprint(ch) || ch == L'\t') {
             diffstk_insert_span(edp, &ch, 1);
             line_insert(line, edp->cursx, &ch, 1);
             edp->cursx++;
+            edp->selct.xbeg = edp->cursx;
+            edp->selct.xend = edp->cursx;
+        }
+        if (edp->mode == MODE_SELECT_HORIZ) {
+            return 0;
         }
         break;
     case KEY_CTRL_CANC:
@@ -1214,6 +1230,10 @@ handle_input(struct Editor *edp, lint_t c) {
         break;
 
     case KEY_BACKSPACE:
+        if (edp->mode == MODE_SELECT_HORIZ) {
+            delete_lines(edp, &edp->selct);
+            return 0;
+        }
         del_back(edp);
         break;
     case KEY_DC:
@@ -1986,7 +2006,84 @@ replace_word_positrange(struct Editor *edp, struct Selection *selct,
         dcurr->type = DIFF_TYPE_SUBSTCK;
         dcurr->diff_sub = subp->diffstk;
     }
+    edp->cursx = subp->cursx;
+    edp->cursy = subp->cursy;
     return found;
+}
+
+static int
+delete_lines(struct Editor *edp, struct Selection *selct) {
+    int res;
+    struct Selection f;
+    struct Selection s;
+
+    unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
+        return -1;
+    }
+    if (selct->ybeg >= selct->yend) {
+        f.ybeg = 0;
+        f.yend = selct->yend;
+        s.ybeg = selct->ybeg + 1;
+        s.yend = edp->doc->size;
+
+        res = delete_lines_positrange(edp, &s);
+        return res | delete_lines_positrange(edp, &f);
+    }
+    return delete_lines_positrange(edp, selct);
+}
+
+static int
+delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
+    int ycurr = selct->ybeg;
+    int size;
+    int pos;
+    struct Editor sub = {
+        .doc = edp->doc,
+        .diffstk = NULL,
+    };
+    struct Editor *subp = &sub;
+    struct Diff *dcurr;
+
+    unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
+        return -1;
+    }
+    assert(selct->ybeg <= selct->yend);
+    if (selct->ybeg == selct->yend) {
+        return 0;
+    }
+    assert(edp->doc->size > selct->ybeg);
+    assert(edp->doc->size >= selct->yend);
+
+    xrealloc_arr(&subp->diffstk, INIT_SUBDIFF);
+    memset(subp->diffstk, 0, sizeof(*subp->diffstk));
+    subp->diffstk->alloc = INIT_SUBDIFF;
+
+    while (ycurr < selct->yend) {
+        size = subp->doc->data[ycurr].size;
+        subp->cursx = size;
+        subp->cursy = ycurr;
+        if (size) {
+            line_remove_span_qdiff(subp, &subp->doc->data[ycurr], size, -size);
+            subp->cursx -= size;
+        }
+        ycurr++;
+    }
+    for (int i = 1; i < edp->selct.yend - edp->selct.ybeg; ++i) {
+        del_back(subp);
+    }
+    xrealloc_arr(&subp->diffstk, subp->diffstk->size);
+    subp->diffstk->alloc = subp->diffstk->size;
+
+    diffstk_reserve(&edp->diffstk);
+    pos   = edp->diffstk->curr;
+    dcurr = edp->diffstk->data + pos;
+    diffstk_incr(edp->diffstk);
+    dcurr->type = DIFF_TYPE_SUBSTCK;
+    dcurr->diff_sub = subp->diffstk;
+
+    edp->cursx = subp->cursx;
+    edp->cursy = subp->cursy;
+    return 0;
 }
 
 static int
@@ -2002,11 +2099,11 @@ replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
     if (selct->ybeg >= selct->yend) {
         f.ybeg = 0;
         f.yend = selct->yend;
-        s.ybeg = selct->ybeg;
+        s.ybeg = selct->ybeg + 1;
         s.yend = edp->doc->size;
 
-        res = replace_word_positrange(edp, &f, str, size, nstr, nsize);
-        return res | replace_word_positrange(edp, &s, str, size, nstr, nsize);
+        res = replace_word_positrange(edp, &s, str, size, nstr, nsize);
+        return res | replace_word_positrange(edp, &f, str, size, nstr, nsize);
     }
     return replace_word_positrange(edp, selct, str, size, nstr, nsize);
 }
@@ -2058,7 +2155,7 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     } else if (edp->mode == MODE_SEARCH) {
         addstr("search: ");
     }
-    if (edp->mode < MODE_SELECT_HORIZ) {
+    likely_if_(edp->mode < MODE_SELECT_HORIZ) {
         addnwstr(str, size);
     } else if (edp->mode == MODE_SELECT_HORIZ) {
         if (edp->selct.ybeg < edp->selct.yend) {
@@ -2091,8 +2188,11 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
                 } else {
                     rest = min(size - i, edp->selct.xend - i);
                     attron(A_REVERSE);
-                    addnwstr(str, rest);
+                    addnwstr(str, rest - 1);
                     attroff(A_REVERSE);
+                    attron(COLOR_PAIR(1));
+                    addnwstr(str + rest - 1, 1);
+                    attroff(COLOR_PAIR(1));
                 }
                 str += rest;
                 i   += rest;
