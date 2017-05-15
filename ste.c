@@ -43,6 +43,7 @@
 #define KEY_CTRL_PGDOWN 550
 #define KEY_CTRL_PGUP   555
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
 #define xrealloc_arr(p, size)                                                 \
     xrealloc_ptr(p, size, sizeof(*(*p)->data), sizeof(**p))
 
@@ -134,8 +135,9 @@ enum TERN {
 
 enum MODE {
     MODE_NORMAL,
-    MODE_SELECT,
     MODE_SEARCH,
+    MODE_SELECT_HORIZ,
+    MODE_SELECT_VERT,
 };
 
 struct Window {
@@ -152,9 +154,11 @@ struct FileInfo {
 };
 
 struct Selection {
-    // yend values are excluded
+    // xbeg, yend values are excluded
     int ybeg;
     int yend;
+    int xbeg;
+    int xend;
 };
 
 typedef struct Editor {
@@ -1049,7 +1053,7 @@ handle_input(struct Editor *edp, lint_t c) {
     case KEY_CTRL_CANC:
         return 0;
     case L'\n':
-        if (edp->mode != MODE_NORMAL) {
+        if (edp->mode == MODE_SEARCH) {
             if (edp->cursx == 0) {
                 if (edp->cursy != edp->doc->size - 1) {
                     line = edp->doc->data + edp->cursy;
@@ -1065,6 +1069,8 @@ handle_input(struct Editor *edp, lint_t c) {
                 edp->cursy = edp->doc->size - 1;
                 edp->cursx = 0;
             }
+            return 0;
+        } else if (edp->mode >= MODE_SELECT_HORIZ) {
             return 0;
         }
         diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
@@ -1241,8 +1247,43 @@ handle_input(struct Editor *edp, lint_t c) {
             get_wch(&ignore);
         }
         break;
-    }
+    case 6:
+        key = keyname(ch);
+        if (strcmp(key, "^F") == 0) {
+            int mode = edp->mode;
+            if (mode != MODE_SELECT_HORIZ) {
+                edp->mode = MODE_SELECT_HORIZ;
 
+                edp->selct.ybeg = edp->cursy;
+                edp->selct.xbeg = edp->cursx;
+
+                do {
+                    cont = render_loop(edp);
+                } while (cont);
+            }
+            edp->mode = mode;
+        }
+        break;
+    case 22:
+        key = keyname(ch);
+        if (strcmp(key, "^V") == 0) {
+            int mode = edp->mode;
+            if (mode != MODE_SELECT_VERT) {
+                edp->mode = MODE_SELECT_VERT;
+
+                edp->selct.ybeg = edp->cursy;
+                edp->selct.xbeg = edp->cursx;
+
+                do {
+                    cont = render_loop(edp);
+                } while (cont);
+            }
+            edp->mode = mode;
+        }
+        break;
+    }
+    edp->selct.xend = edp->cursx + 1;
+    edp->selct.yend = edp->cursy + 1;
 
     return 1;
 }
@@ -1515,6 +1556,8 @@ reposition_cursor(struct Editor *edp) {
     }
 
     move_brush(edp, y, x + edp->win.offx);
+
+
 }
 
 static enum EFILE
@@ -1867,7 +1910,7 @@ replace_word_positrange(struct Editor *edp, struct Selection *selct,
     long long pos;
     struct Diff *dcurr;
 
-    unlikely_if_(edp->mode != MODE_SELECT) {
+    unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
         return -1;
     }
     assert(selct->ybeg <= selct->yend);
@@ -1940,7 +1983,7 @@ replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
     struct Selection f;
     struct Selection s;
 
-    unlikely_if_(edp->mode != MODE_SELECT) {
+    unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
         return -1;
     }
     if (selct->ybeg >= selct->yend) {
@@ -1980,6 +2023,8 @@ num_digits(int i, int base) {
     return res;
 }
 
+
+
 static int
 calc_padlx(struct Editor *edp) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
@@ -1992,21 +2037,53 @@ calc_padlx(struct Editor *edp) {
 
 static void
 paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
-    (void)x;
+    int i = 0;
+    int rest;
 
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
     } else if (edp->mode == MODE_SEARCH) {
         addstr("search: ");
     }
-    if (edp->mode != MODE_SELECT) {
+    if (edp->mode < MODE_SELECT_HORIZ) {
         addnwstr(str, size);
-    } else {
-        int notincl = edp->selct.ybeg >= edp->selct.yend;
-        if (notincl ^ (y >= edp->selct.ybeg && y < edp->selct.yend)) {
-            attron(A_REVERSE);
-            addnwstr(str, size);
-            attroff(A_REVERSE);
+    } else if (edp->mode == MODE_SELECT_HORIZ) {
+        if (edp->selct.ybeg < edp->selct.yend) {
+            if (y >= edp->selct.ybeg && y < edp->selct.yend) {
+                attron(A_REVERSE);
+                addnwstr(str, size);
+                attroff(A_REVERSE);
+            } else {
+                addnwstr(str, size);
+            }
+        } else {
+            if (y <= edp->selct.ybeg && y >= edp->selct.yend) {
+                addnwstr(str, size);
+            } else {
+                attron(A_REVERSE);
+                addnwstr(str, size);
+                attroff(A_REVERSE);
+            }
+        }
+    } else if (edp->mode == MODE_SELECT_VERT) {
+        if (edp->selct.ybeg < edp->selct.yend && y >= edp->selct.ybeg &&
+            y < edp->selct.yend) {
+            while (i < size) {
+                if (x + i < edp->selct.xbeg) {
+                    rest = edp->selct.xbeg;
+                    addnwstr(str, rest);
+                } else if (x + i >= edp->selct.xend) {
+                    addnwstr(str, size - i);
+                    break;
+                } else {
+                    rest = min(size - i, edp->selct.xend - i);
+                    attron(A_REVERSE);
+                    addnwstr(str, rest);
+                    attroff(A_REVERSE);
+                }
+                str += rest;
+                i   += rest;
+            }
         } else {
             addnwstr(str, size);
         }
