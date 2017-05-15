@@ -272,6 +272,7 @@ static int delete_lines_positrange(struct Editor *, struct Selection *);
 
 static int replace_word(struct Editor *, struct Selection *, lchar_t *,
                         int, lchar_t *, int);
+static int exec_command(struct Editor *, lchar_t *, int);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -1248,8 +1249,7 @@ handle_input(struct Editor *edp, lint_t c) {
             edp->exec_line = edp->search->exec_line;
 
             if (edp->exec_line && edp->exec_line->size) {
-                move_to_word(edp, edp->exec_line->data,
-                             edp->exec_line->size);
+                move_to_word(edp, edp->exec_line->data, edp->exec_line->size);
             }
         }
         break;
@@ -1344,6 +1344,23 @@ handle_input(struct Editor *edp, lint_t c) {
                 } while (cont);
             }
             edp->mode = mode;
+        }
+        break;
+    case 5:
+        key = keyname(ch);
+        if (strcmp(key, "^E") == 0) {
+            if (edp->mode != MODE_NORMAL) {
+                break;
+            }
+        }
+        edp->command->win.fullx = edp->win.x;
+        edp->command->win.offy = edp->win.y - edp->command->win.y;
+        do {
+            cont = render_loop(edp->command);
+        } while (cont);
+        if (edp->command->exec_line && edp->command->exec_line->size) {
+            exec_command(edp, edp->command->exec_line->data,
+                         edp->command->exec_line->size);
         }
         break;
     }
@@ -2244,3 +2261,12 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     }
 }
 
+static int
+exec_command(struct Editor *edp, lchar_t *str, int size) {
+    (void)edp;
+
+    assert(str);
+    assert(size > 0);
+
+    return -1;
+}
