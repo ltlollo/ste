@@ -388,7 +388,7 @@ diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta) {
     filt_fn_t curr_fil;
     filt_fn_t prev_fil;
 
-    unlikely_if_(edp->mode != MODE_NORMAL) {
+    unlikely_if_(edp->diffstk == NULL) {
         return;
     }
 
@@ -1238,6 +1238,7 @@ handle_input(struct Editor *edp, lint_t c) {
         break;
 
     case 39:
+        // fix combination
         if (edp->mode != MODE_NORMAL) {
             break;
         }
@@ -1252,7 +1253,7 @@ handle_input(struct Editor *edp, lint_t c) {
         key = keyname(ch);
         if (strcmp(key, "^H") == 0) {
             mode = edp->mode;
-            if (mode == MODE_SELECT_VERT) {
+            if (mode == MODE_SELECT_VERT || mode == MODE_SELECT_HORIZ) {
                 edp->mode = MODE_SELECT_HORIZ;
                 edp->selct.ybeg = edp->cursy;
                 edp->selct.xbeg = edp->cursx;
@@ -1262,6 +1263,7 @@ handle_input(struct Editor *edp, lint_t c) {
                 edp->mode = MODE_SELECT_HORIZ;
                 edp->selct.ybeg = edp->cursy;
                 edp->selct.xbeg = edp->cursx;
+
                 do {
                     cont = render_loop(edp);
                 } while (cont);
@@ -1273,7 +1275,7 @@ handle_input(struct Editor *edp, lint_t c) {
         key = keyname(ch);
         if (strcmp(key, "^V") == 0) {
             mode = edp->mode;
-            if (mode == MODE_SELECT_HORIZ) {
+            if (mode == MODE_SELECT_HORIZ || mode == MODE_SELECT_VERT) {
                 edp->mode = MODE_SELECT_VERT;
                 edp->selct.ybeg = edp->cursy;
                 edp->selct.xbeg = edp->cursx;
