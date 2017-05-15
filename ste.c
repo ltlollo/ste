@@ -1200,10 +1200,9 @@ handle_input(struct Editor *edp, lint_t c) {
     case 31:
         key = keyname(ch);
         if (strcmp(key, "^_") == 0) {
-            if (edp->mode != MODE_NORMAL) {
+            if (edp->mode == MODE_SEARCH) {
                 break;
             }
-
             edp->search->win.fullx = edp->win.x;
             edp->search->win.offy = edp->win.y - edp->search->win.y;
 
