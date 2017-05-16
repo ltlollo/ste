@@ -231,6 +231,7 @@ static int diffstk_apply_all(struct Editor *, struct DiffStk *, enum DIREC );
 static void save_current(struct LineArr *, struct FileInfo *,
                          struct DiffStk *);
 static int handle_input(struct Editor *, lint_t);
+static int is_movement(lint_t);
 static int render_loop(struct Editor *);
 
 static int count_render_width_upto(struct Window *, struct Line *, int);
@@ -269,10 +270,12 @@ static int replace_word_positrange(struct Editor *, struct Selection *,
                                    lchar_t *, int, lchar_t *, int);
 static int delete_lines(struct Editor *, struct Selection *);
 static int delete_lines_positrange(struct Editor *, struct Selection *);
+static int delete_vert(struct Editor *edp, struct Selection *);
 
 static int replace_word(struct Editor *, struct Selection *, lchar_t *,
                         int, lchar_t *, int);
 static int exec_command(struct Editor *, lchar_t *, int);
+static int edit_vert(struct Editor *);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -967,6 +970,10 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 
 static int
 diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
+    if (edp->mode == MODE_SELECT_VERT) {
+        // not yet supported
+        return -1;
+    }
     if (edp->diffstk == NULL) {
         return -1;
     }
@@ -1086,11 +1093,18 @@ handle_input(struct Editor *edp, lint_t c) {
     assert(edp->cursy < edp->doc->size);
     assert(edp->cursx <= line->size);
 
+    unlikely_if_(edp->mode == MODE_SELECT_VERT &&
+                 (!edp->diffstk || (edp->diffstk && edp->diffstk->size)) &&
+                 is_movement(c)) {
+        return 1;
+    }
     switch (ch) {
     default:
         if (edp->mode == MODE_SELECT_HORIZ) {
             delete_lines(edp, &edp->selct);
             line = &edp->doc->data[edp->cursy];
+        } else if (edp->mode == MODE_SELECT_VERT) {
+            delete_vert(edp, &edp->selct);
         }
         if (iswprint(ch) || ch == L'\t') {
             diffstk_insert_span(edp, &ch, 1);
@@ -1307,21 +1321,15 @@ handle_input(struct Editor *edp, lint_t c) {
         key = keyname(ch);
         if (strcmp(key, "^H") == 0) {
             mode = edp->mode;
-            if (mode == MODE_SELECT_VERT || mode == MODE_SELECT_HORIZ) {
-                edp->mode = MODE_SELECT_HORIZ;
-                edp->selct.ybeg = edp->cursy;
-                edp->selct.xbeg = edp->cursx;
+            if (mode != MODE_NORMAL) {
                 break;
             }
-            if (mode != MODE_SELECT_HORIZ) {
-                edp->mode = MODE_SELECT_HORIZ;
-                edp->selct.ybeg = edp->cursy;
-                edp->selct.xbeg = edp->cursx;
-
-                do {
-                    cont = render_loop(edp);
-                } while (cont);
-            }
+            edp->mode = MODE_SELECT_HORIZ;
+            edp->selct.ybeg = edp->cursy;
+            edp->selct.xbeg = edp->cursx;
+            do {
+                cont = render_loop(edp);
+            } while (cont);
             edp->mode = mode;
         }
         break;
@@ -1329,20 +1337,14 @@ handle_input(struct Editor *edp, lint_t c) {
         key = keyname(ch);
         if (strcmp(key, "^V") == 0) {
             mode = edp->mode;
-            if (mode == MODE_SELECT_HORIZ || mode == MODE_SELECT_VERT) {
-                edp->mode = MODE_SELECT_VERT;
-                edp->selct.ybeg = edp->cursy;
-                edp->selct.xbeg = edp->cursx;
+            if (mode != MODE_NORMAL) {
                 break;
             }
-            if (mode != MODE_SELECT_VERT) {
-                edp->mode = MODE_SELECT_VERT;
-                edp->selct.ybeg = edp->cursy;
-                edp->selct.xbeg = edp->cursx;
-                do {
-                    cont = render_loop(edp);
-                } while (cont);
-            }
+            edp->mode = MODE_SELECT_VERT;
+            edp->selct.ybeg = edp->cursy;
+            edp->selct.xbeg = edp->cursx;
+
+            edit_vert(edp);
             edp->mode = mode;
         }
         break;
@@ -1975,13 +1977,13 @@ show_keymap(void) {
        "\n    CTRL+N: Find next"
        "\n    CTRL+H: Horizontal Selection Mode"
        "\n    CTRL+V: Vertical Selection Mode"
+       "\n    CTRL+E: Command Mode"
        "\n"
        "\nHELP (END)"
        "\n"
        "\n"
     ); 
 }
-
 
 static int
 replace_word_positrange(struct Editor *edp, struct Selection *selct,
@@ -2086,6 +2088,42 @@ delete_lines(struct Editor *edp, struct Selection *selct) {
         return res | delete_lines_positrange(edp, &f);
     }
     return delete_lines_positrange(edp, selct);
+}
+
+static int
+edit_vert(struct Editor *edp) {
+    struct DiffStk *dsave = edp->diffstk;
+    struct Diff *dcurr;
+    int pos;
+    int cont;
+
+    unlikely_if_(edp->mode != MODE_SELECT_VERT) {
+        return -1;
+    }
+    edp->diffstk = NULL;
+    xrealloc_arr(&edp->diffstk, INIT_SUBDIFF);
+    memset(edp->diffstk, 0, sizeof(*edp->diffstk));
+    edp->diffstk->alloc = INIT_SUBDIFF;
+
+    do {
+        cont = render_loop(edp);
+    } while (cont);
+
+    if (edp->diffstk->size == 0) {
+        free(edp->diffstk);
+    } else {
+        xrealloc_arr(&edp->diffstk, edp->diffstk->size);
+        edp->diffstk->alloc = edp->diffstk->size;
+
+        diffstk_reserve(&dsave);
+        pos   = dsave->curr;
+        dcurr = dsave->data + pos;
+        diffstk_incr(dsave);
+        dcurr->type = DIFF_TYPE_SUBSTCK;
+        dcurr->diff_sub = edp->diffstk;
+    }
+    edp->diffstk = dsave;
+    return 0;
 }
 
 static int
@@ -2267,6 +2305,33 @@ exec_command(struct Editor *edp, lchar_t *str, int size) {
 
     assert(str);
     assert(size > 0);
+
+    return -1;
+}
+
+static int
+is_movement(lint_t c) {
+    return c == KEY_SHIFT_DOWN
+        || c == KEY_SHIFT_UP
+        || c == KEY_SHIFT_LEFT
+        || c == KEY_SHIFT_RIGHT
+        || c == KEY_PGDOWN
+        || c == KEY_PGUP
+        || c == KEY_CTRL_DOWN
+        || c == KEY_CTRL_UP
+        || c == KEY_CTRL_LEFT
+        || c == KEY_CTRL_RIGHT
+        || c == KEY_DOWN
+        || c == KEY_UP
+        || c == KEY_LEFT
+        || c == KEY_RIGHT
+        ;
+}
+
+static int
+delete_vert(struct Editor *edp, struct Selection *selct) {
+    (void)edp;
+    (void)selct;
 
     return -1;
 }
