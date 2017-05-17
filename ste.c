@@ -95,7 +95,7 @@ struct Diff {
     } __attribute__((packed));
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct Diff) == 12 + SMALL_STR, "unsupported arch");
+static_assert(sizeof(struct Diff) == 12 + SMALL_STR, "unsupported arch");
 
 struct Line {
     long size;
