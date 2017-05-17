@@ -286,6 +286,7 @@ static int exec_command(struct Editor *, lchar_t *, int);
 static int edit_vert(struct Editor *);
 static int iter_split(struct SplitIter *, struct Range *);
 static void init_split_iter(struct SplitIter *, lchar_t *, int, int, int);
+static int insert_vert(struct Editor *, lchar_t);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -1093,18 +1094,14 @@ handle_input(struct Editor *edp, lint_t c) {
     assert(edp->cursy < edp->doc->size);
     assert(edp->cursx <= line->size);
 
-    unlikely_if_(edp->mode == MODE_SELECT_VERT &&
-                 (!edp->diffstk || (edp->diffstk && edp->diffstk->size)) &&
-                 is_movement(c)) {
-        return 1;
-    }
     switch (ch) {
     default:
         if (edp->mode == MODE_SELECT_HORIZ) {
             delete_lines(edp, &edp->selct);
             line = &edp->doc->data[edp->cursy];
         } else if (edp->mode == MODE_SELECT_VERT) {
-            delete_vert(edp, &edp->selct);
+            insert_vert(edp, ch);
+            break;
         }
         if (iswprint(ch) || ch == L'\t') {
             diffstk_insert_span(edp, &ch, 1);
@@ -1172,6 +1169,13 @@ handle_input(struct Editor *edp, lint_t c) {
 
     case KEY_CTRL_LEFT:
     case KEY_SHIFT_LEFT:
+        if (edp->mode == MODE_SELECT_VERT) {
+            if (edp->selct.xbeg) {
+                edp->selct.xbeg--;
+                edp->selct.xend--;
+            }
+            return 1;
+        }
         if (edp->cursy == 0 && edp->cursx == 0) {
             break;
         } else if (edp->cursx == 0) {
@@ -1184,6 +1188,11 @@ handle_input(struct Editor *edp, lint_t c) {
 
     case KEY_CTRL_RIGHT:
     case KEY_SHIFT_RIGHT:
+        if (edp->mode == MODE_SELECT_VERT) {
+            edp->selct.xbeg++;
+            edp->selct.xend++;
+            return 1;
+        }
         if (edp->cursx < line->size) {
             edp->cursx = find_next_simil(line->data, edp->cursx, line->size);
         } else if (edp->cursy < edp->doc->size - 1) {
@@ -2253,9 +2262,27 @@ calc_padlx(struct Editor *edp) {
 }
 
 static void
+regularize_selection(struct Selection *in, struct Selection *out) {
+    out->ybeg = in->ybeg;
+    out->yend = in->yend;
+    out->xbeg = in->xbeg;
+    out->xend = in->xend;
+
+    if (in->ybeg >= in->yend) {
+        out->ybeg = out->yend - 1;
+        out->yend = in->ybeg;
+    }
+    if (in->xbeg > in->xend) {
+        out->xbeg = out->xend;
+        out->xend = in->xbeg;
+    }
+}
+
+static void
 paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     struct Range r;
     struct SplitIter it;
+    struct Selection selct;
 
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
@@ -2285,21 +2312,9 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
             }
         }
     } else if (edp->mode == MODE_SELECT_VERT) {
-        int ybeg = edp->selct.ybeg;
-        int yend = edp->selct.yend;
-        int xbeg = edp->selct.xbeg;
-        int xend = edp->selct.xend;
-
-        if (edp->selct.ybeg >= edp->selct.yend) {
-            ybeg = yend - 1;
-            yend = edp->selct.ybeg;
-        }
-        if (edp->selct.xbeg > edp->selct.xend) {
-            xbeg = xend;
-            xend = edp->selct.xbeg;
-        }
-        if (y >= ybeg && y < yend) {
-            init_split_iter(&it, str, size, xbeg + x, xend + x);
+        regularize_selection(&edp->selct, &selct);
+        if (y >= selct.ybeg && y < selct.yend) {
+            init_split_iter(&it, str, size, selct.xbeg + x, selct.xend + x);
             for (int i = 0; i < 2; i++) {
                 if (iter_split(&it, &r)) {
                     attron(A_REVERSE);
@@ -2307,27 +2322,26 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
                     attroff(A_REVERSE);
                     iter_split(&it, &r);
                     if (r.end == r.beg) {
+                        break;
+                    } else {
                         attron(COLOR_PAIR(1));
-                        addch(' ');
+                        addnwstr(r.beg, 1);
                         attroff(COLOR_PAIR(1));
+                        addnwstr(r.beg + 1, r.end - r.beg - 1);
                         return;
                     }
-                    attron(COLOR_PAIR(1));
-                    addnwstr(r.beg, 1);
-                    attroff(COLOR_PAIR(1));
-                    addnwstr(r.beg + 1, r.end - r.beg - 1);
-                    return;
                 } else {
                     addnwstr(r.beg, r.end - r.beg);
                 }
             }
+            attron(COLOR_PAIR(1));
+            addch(' ');
+            attroff(COLOR_PAIR(1));
         } else {
             addnwstr(str, size);
         }
     }
 }
-
-
 
 static int
 is_movement(lint_t c) {
@@ -2359,19 +2373,47 @@ exec_command(struct Editor *edp, lchar_t *str, int size) {
 }
 
 static int
-delete_vert(struct Editor *edp, struct Selection *selct) {
-    (void)edp;
+delete_vert(struct Editor *edp, struct Selection *s) {
+    struct Selection selct;
+    struct Line *line;
+    int delta;
 
-    unlikely_if_(selct->ybeg >= selct->yend || selct->xbeg > selct->xend) {
+    regularize_selection(s, &selct);
+    unlikely_if_(selct.ybeg >= selct.yend || selct.xbeg > selct.xend) {
         return -1;
     }
-    if (selct->xend - selct->xbeg == 0) {
-        edp->cursx = 0;
-        edp->cursy = selct->yend - 1;
-
-        while (edp->cursy != selct->ybeg) {
+    if (selct.xend - selct.xbeg == 0) {
+        for (int i = selct.yend - 1; i != selct.ybeg - 1; i--) {
+            edp->cursy = i;
+            edp->cursx = min(selct.xend, edp->doc->data[edp->cursy].size);
+            if (i == selct.ybeg && selct.xbeg == 0) {
+                return 0;
+            }
             del_back(edp);
-            edp->cursx = 0;
+        }
+        edp->cursy = s->yend - 1;
+        memcpy(&edp->selct, &selct, sizeof(selct));
+        edp->selct.xend--;
+        edp->selct.xbeg--;
+        edp->cursx = min(edp->selct.xend, edp->doc->data[edp->cursy].size);
+    } else {
+        for (int i = selct.yend - 1; i != selct.ybeg - 1; i--) {
+            edp->cursy = i;
+            edp->cursx = min(selct.xend, edp->doc->data[edp->cursy].size);
+            if (selct.xbeg >= edp->doc->data[edp->cursy].size) {
+                continue;
+            }
+            delta = edp->cursx - selct.xbeg;
+            assert(delta >= 0);
+            if (delta == 0) {
+                continue;
+            }
+            line = &edp->doc->data[edp->cursy];
+            line_remove_span_qdiff(edp, line, edp->cursx, -delta);
+            edp->cursy = s->yend - 1;
+            memcpy(&edp->selct, &selct, sizeof(selct));
+            edp->selct.xend = edp->selct.xbeg;
+            edp->cursx = min(edp->selct.xend, edp->doc->data[edp->cursy].size);
         }
     }
     return 0;
@@ -2379,11 +2421,6 @@ delete_vert(struct Editor *edp, struct Selection *selct) {
 
 static int
 iter_split(struct SplitIter *it, struct Range *delta) {
-    if (it->line.end == it->line.beg) {
-        delta->beg = it->line.beg;
-        delta->end = it->line.end;
-        return 0;
-    }
     if (it->line.end <= it->selct.beg) {
         delta->beg = it->line.beg;
         delta->end = it->line.end;
@@ -2393,18 +2430,37 @@ iter_split(struct SplitIter *it, struct Range *delta) {
     if (it->line.beg < it->selct.beg) {
         delta->beg = it->line.beg;
         delta->end = it->selct.beg;
-        it->line.beg = delta->end;
+        it->line.beg = it->selct.beg;
         return 0;
     }
     if (it->line.beg == it->selct.beg) {
         delta->beg = it->line.beg;
         delta->end = min(it->selct.end, it->line.end);
         it->line.beg = delta->end;
-        it->selct.beg--;
+        it->selct.beg = it->line.end;
         return 1;
     }
     delta->beg = it->line.beg;
     delta->end = it->line.end;
-    it->line.beg = delta->end;
+    return 0;
+}
+
+static int
+insert_vert(struct Editor *edp, lchar_t ch) {
+    struct Line *line;
+
+    if (edp->selct.xend - edp->selct.xbeg) {
+        delete_vert(edp, &edp->selct);
+    }
+    for (int i = edp->selct.ybeg; i < edp->selct.yend; i++) {
+        edp->cursy = i;
+        line = edp->doc->data + edp->cursy;
+        edp->cursx = min(edp->selct.xend, line->size);
+        diffstk_insert_span(edp, &ch, 1);
+        line_insert(line, edp->cursx, &ch, 1);
+    }
+    edp->cursx++;
+    edp->selct.xbeg = edp->cursx;
+    edp->selct.xend = edp->cursx;
     return 0;
 }
