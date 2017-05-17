@@ -27,6 +27,8 @@
 #define INIT_SEARCH     128
 #define INIT_COMMAND    128
 #define SSTR_SIZE       128
+#define SEARCH_MSG      "search: "
+#define COMMAND_MSG     "$: "
 
 #define MAX_DIFF_SIZE   0x1fffffff
 
@@ -44,8 +46,6 @@
 #define KEY_CTRL_PGDOWN 550
 #define KEY_CTRL_PGUP   555
 
-#define SEARCH_MSG  "search: "
-#define COMMAND_MSG "$: "
 
 #define xrealloc_arr(p, size)                                                 \
     xrealloc_ptr(p, size, sizeof(*(*p)->data), sizeof(**p))
@@ -241,9 +241,7 @@ static int diffstk_apply_all(struct Editor *, struct DiffStk *, enum DIREC );
 static void save_current(struct LineArr *, struct FileInfo *,
                          struct DiffStk *);
 static int handle_input(struct Editor *, lint_t);
-static int is_movement(lint_t);
 static int render_loop(struct Editor *);
-
 static int count_render_width_upto(struct Window *, struct Line *, int);
 static lchar_t * render_max_given_width(struct Window *, lchar_t *, lchar_t *,
                                         int);
@@ -2363,25 +2361,6 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
             addnwstr(str, size);
         }
     }
-}
-
-static int
-is_movement(lint_t c) {
-    return c == KEY_SHIFT_DOWN
-        || c == KEY_SHIFT_UP
-        || c == KEY_SHIFT_LEFT
-        || c == KEY_SHIFT_RIGHT
-        || c == KEY_PGDOWN
-        || c == KEY_PGUP
-        || c == KEY_CTRL_DOWN
-        || c == KEY_CTRL_UP
-        || c == KEY_CTRL_LEFT
-        || c == KEY_CTRL_RIGHT
-        || c == KEY_DOWN
-        || c == KEY_UP
-        || c == KEY_LEFT
-        || c == KEY_RIGHT
-        ;
 }
 
 static int
