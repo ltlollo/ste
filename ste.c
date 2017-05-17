@@ -872,7 +872,8 @@ move_down_natural(struct Editor *edp) {
     lchar_t *end = render_max_given_width(&edp->win, beg,
                                           line->data + line->size, edp->win.x);
 
-    if (edp->mode == MODE_SELECT_VERT && edp->selct.ybeg < edp->selct.yend) {
+    if (edp->mode == MODE_SELECT_VERT &&
+        edp->selct.ybeg < edp->selct.yend - 1) {
         edp->selct.ybeg++;
         return 0;
     }
@@ -2485,3 +2486,4 @@ insert_vert(struct Editor *edp, lchar_t ch) {
     edp->selct.xend = edp->cursx;
     return 0;
 }
+
