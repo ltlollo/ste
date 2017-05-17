@@ -165,6 +165,16 @@ struct Selection {
     int xend;
 };
 
+struct Range {
+    lchar_t *beg;
+    lchar_t *end;
+};
+
+struct SplitIter {
+    struct Range line;
+    struct Range selct;
+};
+
 typedef struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
@@ -214,7 +224,7 @@ static int realloc_ptr(void *, size_t, size_t, size_t);
 static void xrealloc_ptr(void *, size_t, size_t, size_t);
 static void close_win(void);
 static void open_win(struct Editor *);
-static void init_editor(struct Editor *, const char *);
+static struct Editor *init_editor(const char *);
 static int move_right(struct Editor *);
 static int move_left(struct Editor *);
 static int del_back(struct Editor *);
@@ -258,8 +268,6 @@ static int usr_quit(struct Editor *);
 static int move_to_word(struct Editor *, const lchar_t *str, long size);
 static void line_remove_span(struct Line *, int, int);
 
-static struct Editor *load_search_history(const char *);
-static struct Editor *load_command_history(const char *);
 static void move_brush(struct Editor *, int, int);
 static void clear_window(struct Editor *);
 static int num_digits(int, int);
@@ -276,6 +284,8 @@ static int replace_word(struct Editor *, struct Selection *, lchar_t *,
                         int, lchar_t *, int);
 static int exec_command(struct Editor *, lchar_t *, int);
 static int edit_vert(struct Editor *);
+static int iter_split(struct SplitIter *, struct Range *);
+static void init_split_iter(struct SplitIter *, lchar_t *, int, int, int);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -317,10 +327,9 @@ diffstk_insert_addbk(struct Editor *edp, int y, int x) {
     struct Diff *curr;
     struct Diff *prev;
 
-    unlikely_if_(edp->mode != MODE_NORMAL) {
+    unlikely_if_(edp->diffstk == NULL) {
         return;
     }
-
     diffstk_reserve(&edp->diffstk);
 
     pos  = edp->diffstk->curr;
@@ -351,10 +360,9 @@ diffstk_insert_delbk(struct Editor *edp, int y, int x) {
     struct Diff *curr;
     struct Diff *prev;
 
-    unlikely_if_(edp->mode != MODE_NORMAL) {
+    unlikely_if_(edp->diffstk == NULL) {
         return;
     }
-
     diffstk_reserve(&edp->diffstk);
 
     pos  = edp->diffstk->curr;
@@ -384,6 +392,7 @@ diffstk_insert_delbk(struct Editor *edp, int y, int x) {
 static int
 eq_bigch(struct Diff *diff, enum DIFF_TYPE small) {
     assert(small == DIFF_TYPE_DELCHR_SMALL || small == DIFF_TYPE_ADDCHR_SMALL);
+
     if (small == DIFF_TYPE_DELCHR_SMALL) {
         return diff->type == DIFF_TYPE_DELCHR ||
                diff->type == DIFF_TYPE_DELCHR_SMALL;
@@ -634,8 +643,14 @@ open_win(struct Editor *edp) {
     edp->win.pgspan = edp->win.y / 4 * 3;
 }
 
-static void
-init_editor(struct Editor *edp, const char *fname) {
+static struct Editor *
+init_editor(const char *fname) {
+    static struct Editor pub_ed;
+    static struct Editor search;
+    static struct Editor command;
+
+    struct Editor *edp = &pub_ed;
+
     setlocale(LC_ALL, "");
 
     xrealloc_arr(&edp->doc, INIT_DOC);
@@ -653,8 +668,18 @@ init_editor(struct Editor *edp, const char *fname) {
     open_win(edp);
     atexit(close_win);
 
-    edp->search = load_search_history(NULL);
-    edp->command = load_command_history(NULL);
+    xinit_doc(&search, INIT_SEARCH, NULL);
+    search.mode = MODE_SEARCH;
+    search.win.y = 1;
+    search.cursy = search.doc->size - 1;
+
+    xinit_doc(&command, INIT_COMMAND, NULL);
+    command.mode = MODE_COMMAND;
+    command.win.y = 1;
+    command.cursy = command.doc->size - 1;
+
+    edp->search = &search;
+    edp->command = &command;
 
     // share search history between command and normal
     edp->command->search = edp->search;
@@ -669,6 +694,7 @@ init_editor(struct Editor *edp, const char *fname) {
     start_color();
     use_default_colors();
     init_pair(1, COLOR_WHITE, COLOR_RED);
+    return edp;
 }
 
 static void
@@ -696,32 +722,6 @@ xinit_doc(struct Editor *edp, size_t sz, const char *fname) {
     }
     edp->fileinfo.fname = strdup(fname);
     assert(edp->fileinfo.fname);
-}
-
-static struct Editor*
-load_search_history(const char *fname) {
-    static Editor search;
-
-    xinit_doc(&search, INIT_SEARCH, fname);
-
-    search.mode = MODE_SEARCH;
-    search.win.y = 1;
-    search.cursy = search.doc->size - 1;
-
-    return &search;
-}
-
-static struct Editor*
-load_command_history(const char *fname) {
-    static Editor command;
-
-    xinit_doc(&command, INIT_COMMAND, fname);
-
-    command.mode = MODE_COMMAND;
-    command.win.y = 1;
-    command.cursy = command.doc->size - 1;
-
-    return &command;
 }
 
 static int
@@ -760,7 +760,7 @@ del_back(struct Editor *edp) {
         return -1;
     }
     if (edp->cursx == 0) {
-        if (edp->mode != MODE_NORMAL) {
+        if (edp->mode != MODE_NORMAL && edp->mode != MODE_SELECT_VERT) {
             return -1;
         }
         edp->cursy--;
@@ -1282,6 +1282,14 @@ handle_input(struct Editor *edp, lint_t c) {
             delete_lines(edp, &edp->selct);
             return 0;
         }
+        if (edp->mode == MODE_SELECT_VERT) {
+            if (edp->selct.xbeg == 0 && edp->selct.xend == 0) {
+                delete_vert(edp, &edp->selct);
+                return 0;
+            }
+            delete_vert(edp, &edp->selct);
+            break;
+        }
         del_back(edp);
         break;
     case KEY_DC:
@@ -1366,9 +1374,8 @@ handle_input(struct Editor *edp, lint_t c) {
         }
         break;
     }
-    edp->selct.xend = edp->cursx + 1;
+    edp->selct.xend = edp->cursx;
     edp->selct.yend = edp->cursy + 1;
-
     return 1;
 }
 
@@ -1397,18 +1404,16 @@ render_loop(struct Editor *edp) {
 
 int
 main(int argc, char *argv[]) {
-    static struct Editor pub_ed;
+    static struct Editor *edp;
     int cont;
 
     if (argc - 1 != 1) {
         errx(1, "need help?");
     }
-    init_editor(&pub_ed, argv[1]);
-
+    edp = init_editor(argv[1]);
     do {
-        cont = render_loop(&pub_ed);
+        cont = render_loop(edp);
     } while (cont);
-
     return 0;
 }
 
@@ -2227,6 +2232,14 @@ num_digits(int i, int base) {
     return res;
 }
 
+static void
+init_split_iter(struct SplitIter *it, lchar_t *str, int size, int beg, int end) {
+    it->line.beg = str;
+    it->line.end = str + size;
+    it->selct.beg = str + beg;
+    it->selct.end = str + end;
+}
+
 static int
 calc_padlx(struct Editor *edp) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
@@ -2241,8 +2254,8 @@ calc_padlx(struct Editor *edp) {
 
 static void
 paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
-    int i = 0;
-    int rest;
+    struct Range r;
+    struct SplitIter it;
 
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
@@ -2272,26 +2285,41 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
             }
         }
     } else if (edp->mode == MODE_SELECT_VERT) {
-        if (edp->selct.ybeg < edp->selct.yend && y >= edp->selct.ybeg &&
-            y < edp->selct.yend) {
-            while (i < size) {
-                if (x + i < edp->selct.xbeg) {
-                    rest = edp->selct.xbeg;
-                    addnwstr(str, rest);
-                } else if (x + i >= edp->selct.xend) {
-                    addnwstr(str, size - i);
-                    break;
-                } else {
-                    rest = min(size - i, edp->selct.xend - i);
+        int ybeg = edp->selct.ybeg;
+        int yend = edp->selct.yend;
+        int xbeg = edp->selct.xbeg;
+        int xend = edp->selct.xend;
+
+        if (edp->selct.ybeg >= edp->selct.yend) {
+            ybeg = yend - 1;
+            yend = edp->selct.ybeg;
+        }
+        if (edp->selct.xbeg > edp->selct.xend) {
+            xbeg = xend;
+            xend = edp->selct.xbeg;
+        }
+        if (y >= ybeg && y < yend) {
+            init_split_iter(&it, str, size, xbeg + x, xend + x);
+            for (int i = 0; i < 2; i++) {
+                if (iter_split(&it, &r)) {
                     attron(A_REVERSE);
-                    addnwstr(str, rest - 1);
+                    addnwstr(r.beg, r.end - r.beg);
                     attroff(A_REVERSE);
+                    iter_split(&it, &r);
+                    if (r.end == r.beg) {
+                        attron(COLOR_PAIR(1));
+                        addch(' ');
+                        attroff(COLOR_PAIR(1));
+                        return;
+                    }
                     attron(COLOR_PAIR(1));
-                    addnwstr(str + rest - 1, 1);
+                    addnwstr(r.beg, 1);
                     attroff(COLOR_PAIR(1));
+                    addnwstr(r.beg + 1, r.end - r.beg - 1);
+                    return;
+                } else {
+                    addnwstr(r.beg, r.end - r.beg);
                 }
-                str += rest;
-                i   += rest;
             }
         } else {
             addnwstr(str, size);
@@ -2299,15 +2327,7 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     }
 }
 
-static int
-exec_command(struct Editor *edp, lchar_t *str, int size) {
-    (void)edp;
 
-    assert(str);
-    assert(size > 0);
-
-    return -1;
-}
 
 static int
 is_movement(lint_t c) {
@@ -2329,9 +2349,62 @@ is_movement(lint_t c) {
 }
 
 static int
-delete_vert(struct Editor *edp, struct Selection *selct) {
+exec_command(struct Editor *edp, lchar_t *str, int size) {
     (void)edp;
-    (void)selct;
+
+    assert(str);
+    assert(size > 0);
 
     return -1;
+}
+
+static int
+delete_vert(struct Editor *edp, struct Selection *selct) {
+    (void)edp;
+
+    unlikely_if_(selct->ybeg >= selct->yend || selct->xbeg > selct->xend) {
+        return -1;
+    }
+    if (selct->xend - selct->xbeg == 0) {
+        edp->cursx = 0;
+        edp->cursy = selct->yend - 1;
+
+        while (edp->cursy != selct->ybeg) {
+            del_back(edp);
+            edp->cursx = 0;
+        }
+    }
+    return 0;
+}
+
+static int
+iter_split(struct SplitIter *it, struct Range *delta) {
+    if (it->line.end == it->line.beg) {
+        delta->beg = it->line.beg;
+        delta->end = it->line.end;
+        return 0;
+    }
+    if (it->line.end <= it->selct.beg) {
+        delta->beg = it->line.beg;
+        delta->end = it->line.end;
+        it->line.beg = it->line.end;
+        return 0;
+    }
+    if (it->line.beg < it->selct.beg) {
+        delta->beg = it->line.beg;
+        delta->end = it->selct.beg;
+        it->line.beg = delta->end;
+        return 0;
+    }
+    if (it->line.beg == it->selct.beg) {
+        delta->beg = it->line.beg;
+        delta->end = min(it->selct.end, it->line.end);
+        it->line.beg = delta->end;
+        it->selct.beg--;
+        return 1;
+    }
+    delta->beg = it->line.beg;
+    delta->end = it->line.end;
+    it->line.beg = delta->end;
+    return 0;
 }
