@@ -1,5 +1,3 @@
-// gcc self -g -O0 $(pkg-config --libs ncursesw) -o ste -pedantic -Wall -Wextra
-
 #define _XOPEN_SOURCE 700
 #include <assert.h>
 #include <ctype.h>
@@ -8,6 +6,7 @@
 #include <limits.h>
 #include <locale.h>
 #include <signal.h>
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +53,7 @@
     xrealloc_ptr(&p->data, size, sizeof(*p->data), 0)
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-#define arrsize(cx) ((long long)(sizeof(cx) / sizeof(*cx)))
+#define arrsize(cx) ((long)(sizeof(cx) / sizeof(*cx)))
 #define expect(x, v) __builtin_expect(x, v)
 #define unlikely(x) expect(!!(x), 0)
 #define likely(x) expect(!!(x), 1)
@@ -99,23 +98,23 @@ struct Diff {
 _Static_assert(sizeof(struct Diff) == 12 + SMALL_STR, "unsupported arch");
 
 struct Line {
-    long long size;
-    long long alloc;
+    long size;
+    long alloc;
     lchar_t *data;
 };
 
 struct DiffStk {
-    long long curr_save_point;
-    long long size;
-    long long alloc;
-    long long curr;
-    struct Diff _Alignas(32) data[];
+    long curr_save_point;
+    long size;
+    long alloc;
+    long curr;
+    struct Diff alignas(32) data[];
 };
 
 struct LineArr {
-    long long size;
-    long long alloc;
-    struct Line _Alignas(32) data[];
+    long size;
+    long alloc;
+    struct Line alignas(32) data[];
 };
 
 enum EFILE {
@@ -158,7 +157,7 @@ struct FileInfo {
 };
 
 struct Selection {
-    // xbeg, yend values are excluded
+    /* xbeg, yend values are excluded */
     int ybeg;
     int yend;
     int xbeg;
@@ -288,8 +287,10 @@ static int insert_vert(struct Editor *, lchar_t);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
+    int i;
+
     if (diffstk->curr < diffstk->size) {
-        for (int i = diffstk->curr; i < diffstk->size; i++) {
+        for (i = diffstk->curr; i < diffstk->size; i++) {
             if (diffstk->data[i].type > DIFF_TYPE_INLINE) {
                 unlikely_if_(diffstk->data[i].type == DIFF_TYPE_SUBSTCK) {
                     diffstk_free_all(diffstk->data[i].diff_sub);
@@ -322,7 +323,7 @@ diffstk_reserve(struct DiffStk **diffstk) {
 
 static void
 diffstk_insert_addbk(struct Editor *edp, int y, int x) {
-    long long pos;
+    long pos;
     struct Diff *curr;
     struct Diff *prev;
 
@@ -355,7 +356,7 @@ diffstk_insert_addbk(struct Editor *edp, int y, int x) {
 
 static void
 diffstk_insert_delbk(struct Editor *edp, int y, int x) {
-    long long pos;
+    long pos;
     struct Diff *curr;
     struct Diff *prev;
 
@@ -403,7 +404,7 @@ eq_bigch(struct Diff *diff, enum DIFF_TYPE small) {
 
 static void
 diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta) {
-    long long pos;
+    long pos;
     struct Diff *curr;
     struct Diff *prev;
     enum DIFF_TYPE type;
@@ -562,8 +563,9 @@ line_remove_span_qdiff(struct Editor *edp, struct Line *line,
 static filt_fn_t
 find_match_fil(lint_t ch) {
     filt_fn_t fil = NULL;
+    int i;
 
-    for (int i = 0; i < arrsize(filts); i++) {
+    for (i = 0; i < arrsize(filts); i++) {
         if (filts[i](ch)) {
             fil = filts[i];
             break;
@@ -680,7 +682,7 @@ init_editor(const char *fname) {
     edp->search = &search;
     edp->command = &command;
 
-    // share search history between command and normal
+    /* share search history between command and normal */
     edp->command->search = edp->search;
 
     edp->win.fullx = COLS;
@@ -908,13 +910,14 @@ static void
 diff_apply_brk(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
     struct Line *line;
     struct Line own = { 0, 0, 0 };
+    int i;
 
     edp->cursx = diff->x;
     edp->cursy = diff->y;
     line = &edp->doc->data[edp->cursy];
     if (((diff->type == DIFF_TYPE_ADDBRK) ^ (direc == DIREC_FORW)) == 0) {
         assert(edp->cursy >= 0);
-        for (int i = 0; i < diff->size; i++) {
+        for (i = 0; i < diff->size; i++) {
             merge_lines(edp->doc, edp->cursy);
         }
     } else {
@@ -934,6 +937,7 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
     lchar_t *beg;
     lchar_t *to;
     lchar_t *end;
+    int i;
 
     edp->cursx = diff->x;
     edp->cursy = diff->y;
@@ -964,21 +968,21 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
         line->size += diff->size;
         if (direc == DIREC_FORW) {
             if (diff->type <= DIFF_TYPE_INLINE) {
-                for (int i = diff->size; i; i--) {
+                for (i = diff->size; i; i--) {
                     beg[diff->size - i] = diff->content[i - 1];
                 }
             } else {
-                for (int i = diff->size; i; i--) {
+                for (i = diff->size; i; i--) {
                     beg[diff->size - i] = diff->data[i - 1];
                 }
             }
         } else {
             if (diff->type <= DIFF_TYPE_INLINE) {
-                for (int i = 0; i < diff->size; i++) {
+                for (i = 0; i < diff->size; i++) {
                     beg[diff->size + i] = diff->content[i];
                 }
             } else {
-                for (int i = 0; i < diff->size; i++) {
+                for (i = 0; i < diff->size; i++) {
                     beg[diff->size + i] = diff->data[i];
                 }
             }
@@ -990,7 +994,7 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 static int
 diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
     if (edp->mode == MODE_SELECT_VERT) {
-        // not yet supported
+        /* not yet supported */
         return -1;
     }
     if (edp->diffstk == NULL) {
@@ -1341,7 +1345,7 @@ handle_input(struct Editor *edp, lint_t c) {
         break;
 
     case 39:
-        // fix combination
+        /* fix combination */
         if (edp->mode != MODE_NORMAL) {
             break;
         }
@@ -1450,8 +1454,9 @@ count_render_width_upto(struct Window *win, struct Line *line, int size) {
     int nlines = 0;
     int currline = 0;
     int char_w;
+    int i;
 
-    for (int i = 0; i < size && i < line->size; i++) {
+    for (i = 0; i < size && i < line->size; i++) {
         char_w = wcwidth(line->data[i]);
         assert(char_w < win->x);
         if (char_w != -1) {
@@ -1540,7 +1545,7 @@ count_nlines_upto(struct Editor *edp, struct Line *line, int size) {
     int chars = count_render_width_upto(&edp->win, line, size);
 
     if (edp->doc->data + edp->cursy == line && edp->cursx == line->size) {
-        // add space for the cursor when is at the end of the line
+        /* add space for the cursor when is at the end of the line */
         chars++;
     }
     if (chars == 0) {
@@ -1588,6 +1593,7 @@ render_lines(struct Editor *edp) {
     struct Line *end  = edp->doc->data + edp->doc->size;
     int lines = 0;
     int rest;
+    int i;
 
     assert(edp->cursy >= 0);
     struct Line *curr_line = &edp->doc->data[edp->cursy];
@@ -1605,7 +1611,7 @@ render_lines(struct Editor *edp) {
                                          edp->win.x);
             curr_line_size--;
         }
-        for (int i = 0; i < edp->win.y; i++) {
+        for (i = 0; i < edp->win.y; i++) {
             beg = end;
             end = render_max_given_width(&edp->win, end,
                                          curr_line->data + curr_line->size,
@@ -1618,7 +1624,7 @@ render_lines(struct Editor *edp) {
         rest = count_nlines(edp, line);
         lchar_t *end = line->data;
         lchar_t *beg;
-        for (int i = 0; i < rest && lines < edp->win.y; i++) {
+        for (i = 0; i < rest && lines < edp->win.y; i++) {
             move_brush(edp, lines, 0);
             beg = end;
             end = render_max_given_width(&edp->win, end,
@@ -1785,6 +1791,7 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
     int to_add;
     lchar_t *beg;
     lchar_t *end;
+    int i;
 
     if (delta < 0) {
         to_add = -delta;
@@ -1801,7 +1808,7 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
         } else if (!is_ascii(str - to_add, to_add) ||
                    size + to_add > SMALL_STR) {
             xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
-            for (int i = 0; i < size; i++) {
+            for (i = 0; i < size; i++) {
                 own[i] = diff->content[i];
             }
             diff->data = own;
@@ -1812,7 +1819,7 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
             }
             diff->type = DIFF_TYPE_DELCHR;
         } else {
-            for (int i = size; i < to_add + size; i++) {
+            for (i = size; i < to_add + size; i++) {
                 diff->content[i] = (unsigned char)*beg;
                 beg--;
             }
@@ -1827,14 +1834,14 @@ diff_insert_span(struct Diff *diff, lchar_t *str, int delta) {
             memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
         } else if (!is_ascii(str, to_add) || size + to_add > SMALL_STR) {
             xrealloc_ptr(&own, size + to_add, sizeof(*diff->data), 0);
-            for (int i = 0; i < size; i++) {
+            for (i = 0; i < size; i++) {
                 own[i] = diff->content[i];
             }
             diff->data = own;
             memcpy(diff->data + size, beg, (end - beg) * sizeof(*diff->data));
             diff->type = DIFF_TYPE_ADDCHR;
         } else {
-            for (int i = size; i < to_add + size; i++) {
+            for (i = size; i < to_add + size; i++) {
                 diff->content[i] = (unsigned char)*beg;
                 beg++;
             }
@@ -1926,6 +1933,7 @@ move_to_word(struct Editor *edp, const lchar_t *str, long size) {
     struct Line *line = edp->doc->data + edp->cursy;
     lchar_t *cur = line->data + edp->cursx + 1;
     lchar_t *end = line->data + line->size - size + 1;
+    int i;
 
     if (line->size - size + 1 > 0) {
         for (; cur < end; cur++) {
@@ -1938,7 +1946,7 @@ move_to_word(struct Editor *edp, const lchar_t *str, long size) {
             }
         }
     }
-    for (int i = 1; i < edp->doc->size + 1; i++) {
+    for (i = 1; i < edp->doc->size + 1; i++) {
         line = edp->doc->data + (edp->cursy + i) % edp->doc->size;
         cur = line->data;
         end = line->data + line->size - size + 1;
@@ -1964,6 +1972,7 @@ static int
 usr_quit(struct Editor *edp) {
     const char *msg;
     lint_t ch;
+
     if (edp->diffstk->curr != edp->diffstk->curr_save_point) {
         msg = mkstr_nmt("Save changes to %s? (ynC):", edp->fileinfo.fname);
         move_brush(edp, edp->win.y, 0);
@@ -2031,7 +2040,7 @@ replace_word_positrange(struct Editor *edp, struct Selection *selct,
     lchar_t *ccurr; 
     int xcurr = 0;
     int xend;
-    long long pos;
+    long pos;
     struct Diff *dcurr;
 
     unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
@@ -2117,10 +2126,12 @@ delete_lines(struct Editor *edp, struct Selection *selct) {
         s.ybeg = selct->ybeg + 1;
         s.yend = edp->doc->size;
 
-        res = delete_lines_positrange(edp, &s);
-        return res | delete_lines_positrange(edp, &f);
+        res  = delete_lines_positrange(edp, &s);
+        res |= delete_lines_positrange(edp, &f);
+        return res;
     }
-    return delete_lines_positrange(edp, selct);
+    res = delete_lines_positrange(edp, &s);
+    return res;
 }
 
 static int
@@ -2170,6 +2181,7 @@ delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
     };
     struct Editor *subp = &sub;
     struct Diff *dcurr;
+    int i;
 
     unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
         return -1;
@@ -2195,7 +2207,7 @@ delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
         }
         ycurr++;
     }
-    for (int i = 1; i < edp->selct.yend - edp->selct.ybeg; ++i) {
+    for (i = 1; i < edp->selct.yend - edp->selct.ybeg; ++i) {
         del_back(subp);
     }
     xrealloc_arr(&subp->diffstk, subp->diffstk->size);
@@ -2242,7 +2254,9 @@ move_brush(struct Editor *edp, int y, int x) {
 
 static void
 clear_window(struct Editor *edp) {
-    for (int i = 0; i < edp->win.y; i++) {
+    int i;
+
+    for (i = 0; i < edp->win.y; i++) {
         move_brush(edp, i, 0);
         clrtoeol();
     }
@@ -2303,6 +2317,7 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     struct Range r;
     struct SplitIter it;
     struct Selection selct;
+    int i;
 
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
@@ -2335,7 +2350,7 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
         regularize_selection(&edp->selct, &selct);
         if (y >= selct.ybeg && y < selct.yend) {
             init_split_iter(&it, str, size, selct.xbeg + x, selct.xend + x);
-            for (int i = 0; i < 2; i++) {
+            for (i = 0; i < 2; i++) {
                 if (iter_split(&it, &r)) {
                     attron(A_REVERSE);
                     addnwstr(r.beg, r.end - r.beg);
@@ -2378,13 +2393,14 @@ delete_vert(struct Editor *edp, struct Selection *s) {
     struct Selection selct;
     struct Line *line;
     int delta;
+    int i;
 
     regularize_selection(s, &selct);
     unlikely_if_(selct.ybeg >= selct.yend || selct.xbeg > selct.xend) {
         return -1;
     }
     if (selct.xend - selct.xbeg == 0) {
-        for (int i = selct.yend - 1; i != selct.ybeg - 1; i--) {
+        for (i = selct.yend - 1; i != selct.ybeg - 1; i--) {
             edp->cursy = i;
             edp->cursx = min(selct.xend, edp->doc->data[edp->cursy].size);
             if (i == selct.ybeg && selct.xbeg == 0) {
@@ -2398,7 +2414,7 @@ delete_vert(struct Editor *edp, struct Selection *s) {
         edp->selct.xbeg--;
         edp->cursx = min(edp->selct.xend, edp->doc->data[edp->cursy].size);
     } else {
-        for (int i = selct.yend - 1; i != selct.ybeg - 1; i--) {
+        for (i = selct.yend - 1; i != selct.ybeg - 1; i--) {
             edp->cursy = i;
             edp->cursx = min(selct.xend, edp->doc->data[edp->cursy].size);
             if (selct.xbeg >= edp->doc->data[edp->cursy].size) {
@@ -2449,11 +2465,12 @@ iter_split(struct SplitIter *it, struct Range *delta) {
 static int
 insert_vert(struct Editor *edp, lchar_t ch) {
     struct Line *line;
+    int i;
 
     if (edp->selct.xend - edp->selct.xbeg) {
         delete_vert(edp, &edp->selct);
     }
-    for (int i = edp->selct.ybeg; i < edp->selct.yend; i++) {
+    for (i = edp->selct.ybeg; i < edp->selct.yend; i++) {
         edp->cursy = i;
         line = edp->doc->data + edp->cursy;
         edp->cursx = min(edp->selct.xend, line->size);
