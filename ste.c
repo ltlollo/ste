@@ -1122,7 +1122,9 @@ handle_input(struct Editor *edp, lint_t c) {
             delete_lines(edp, &edp->selct);
             line = &edp->doc->data[edp->cursy];
         } else if (edp->mode == MODE_SELECT_VERT) {
-            insert_vert(edp, ch);
+            if (iswprint(ch) || ch == L'\t') {
+                insert_vert(edp, ch);
+            }
             break;
         }
         if (iswprint(ch) || ch == L'\t') {
@@ -2130,7 +2132,7 @@ delete_lines(struct Editor *edp, struct Selection *selct) {
         res |= delete_lines_positrange(edp, &f);
         return res;
     }
-    res = delete_lines_positrange(edp, &s);
+    res = delete_lines_positrange(edp, selct);
     return res;
 }
 
