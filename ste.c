@@ -729,6 +729,10 @@ static int
 move_right(struct Editor *edp) {
     struct Line *line = &edp->doc->data[edp->cursy];
 
+    if (edp->mode == MODE_SELECT_VERT) {
+        edp->selct.xend++;
+        return 0;
+    }
     if (edp->cursx < line->size) {
         edp->cursx++;
     } else if (edp->cursy < edp->doc->size - 1) {
@@ -742,6 +746,11 @@ move_right(struct Editor *edp) {
 
 static int
 move_left(struct Editor *edp) {
+
+    if (edp->mode == MODE_SELECT_VERT && edp->selct.xend) {
+        edp->selct.xend--;
+        return 0;
+    }
     if (edp->cursy == 0 && edp->cursx == 0) {
         return -1;
     } else if (edp->cursx != 0) {
@@ -862,6 +871,11 @@ move_down_natural(struct Editor *edp) {
     lchar_t *beg = &line->data[edp->cursx];
     lchar_t *end = render_max_given_width(&edp->win, beg,
                                           line->data + line->size, edp->win.x);
+
+    if (edp->mode == MODE_SELECT_VERT && edp->selct.ybeg < edp->selct.yend) {
+        edp->selct.ybeg++;
+        return 0;
+    }
     if (end != line->data + line->size) {
         edp->cursx += end - beg;
         return 0;
@@ -877,6 +891,11 @@ move_up_natural(struct Editor *edp) {
     lchar_t *end = &line->data[edp->cursx];
     lchar_t *beg = render_back_max_given_width(&edp->win, end, line->data - 1,
                                                edp->win.x);
+
+    if (edp->mode == MODE_SELECT_VERT && edp->selct.ybeg) {
+        edp->selct.ybeg--;
+        return 0;
+    }
     if (beg < line->data || line->size == 0) {
         move_up(edp);
         return 0;
@@ -1107,8 +1126,8 @@ handle_input(struct Editor *edp, lint_t c) {
             diffstk_insert_span(edp, &ch, 1);
             line_insert(line, edp->cursx, &ch, 1);
             edp->cursx++;
-            edp->selct.xbeg = edp->cursx;
-            edp->selct.xend = edp->cursx;
+            edp->selct.xbeg++;
+            edp->selct.xend++;
         }
         if (edp->mode == MODE_SELECT_HORIZ) {
             return 0;
@@ -1343,7 +1362,7 @@ handle_input(struct Editor *edp, lint_t c) {
             }
             edp->mode = MODE_SELECT_HORIZ;
             edp->selct.ybeg = edp->cursy;
-            edp->selct.xbeg = edp->cursx;
+            edp->selct.yend = edp->cursy + 1;
             do {
                 cont = render_loop(edp);
             } while (cont);
@@ -1359,7 +1378,9 @@ handle_input(struct Editor *edp, lint_t c) {
             }
             edp->mode = MODE_SELECT_VERT;
             edp->selct.ybeg = edp->cursy;
+            edp->selct.yend = edp->cursy + 1;
             edp->selct.xbeg = edp->cursx;
+            edp->selct.xend = edp->cursx;
 
             edit_vert(edp);
             edp->mode = mode;
@@ -1383,7 +1404,6 @@ handle_input(struct Editor *edp, lint_t c) {
         }
         break;
     }
-    edp->selct.xend = edp->cursx;
     edp->selct.yend = edp->cursy + 1;
     return 1;
 }
@@ -2242,7 +2262,8 @@ num_digits(int i, int base) {
 }
 
 static void
-init_split_iter(struct SplitIter *it, lchar_t *str, int size, int beg, int end) {
+init_split_iter(struct SplitIter *it, lchar_t *str, int size, int beg,
+                int end) {
     it->line.beg = str;
     it->line.end = str + size;
     it->selct.beg = str + beg;
