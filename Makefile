@@ -1,3 +1,11 @@
+LIB  	= -lncursesw -ltinfo
+OCOM 	= -std=c11 -pedantic -Wall -Wextra
+FILES 	= ste.c
+BIN	= ste
+
 all:
-	@gcc ste.c -O0 -g -std=c11 -lncursesw -ltinfo -pedantic -Wall -Wextra -o ste
+	@gcc $(FILES) -O0 -g $(LIB) $(OCOM) -o $(BIN)
 	@ctags -R .
+
+relese:
+	@gcc $(FILES) -O3 $(LIB) $(OCOM) -o $(BIN)
