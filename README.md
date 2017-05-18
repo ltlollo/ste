@@ -2,6 +2,6 @@
 simple text editor
 
 TODO:
-- xclipboard integration
-- ^A change current fileo
+- copy & paste, xclipboard integration
 - bulk replace
+- config to dispatch diffs to a finite ringbuffer
