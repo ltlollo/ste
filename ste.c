@@ -61,6 +61,13 @@
 #define likely(x) expect(!!(x), 1)
 #define unlikely_if_(x) if (unlikely(x))
 #define likely_if_(x) if (likely(x))
+#define case_key(n, s)                      \
+    case n:                                 \
+        key = keyname(ch);                  \
+        unlikely_if_(strcmp(key, s) != 0) { \
+            break;                          \
+        }
+
 
 typedef wint_t lint_t;
 typedef wchar_t lchar_t;
@@ -146,6 +153,11 @@ enum MODE {
     MODE_SELECT_VERT,
 };
 
+enum FILE_ACT {
+    FILE_ACT_OPEN,
+    FILE_ACT_RENAME,
+};
+
 struct Window {
     int y;
     int x;
@@ -190,7 +202,9 @@ struct DocFile {
 
 typedef struct Editor {
     union {
-        struct { EDITOR_PRIV };
+        struct {
+            EDITOR_PRIV
+        };
         struct DocFile pad;
     };
     struct Window win;
@@ -303,7 +317,7 @@ static char * u8str_convert(lchar_t *, int);
 static void init_docfile(struct Editor *, const char *);
 static lchar_t denormalize_xcale(unsigned char);
 static int normalize_xcape(lchar_t);
-static void file_chooser(struct Editor *);
+static void file_chooser(struct Editor *, enum FILE_ACT);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -1159,8 +1173,10 @@ save_current(struct LineArr *doc, struct FileInfo *info,
     save_file_utf8(doc, info, diffstk);
 }
 
+
 static int
 handle_input(struct Editor *edp, lint_t c) {
+    static struct DocFile stash;
     struct Line own = { 0, 0, 0 };
     struct Line *line = &edp->doc->data[edp->cursy];
     int rest;
@@ -1299,79 +1315,51 @@ handle_input(struct Editor *edp, lint_t c) {
     case KEY_CTRL_PGUP:
     case KEY_CTRL_PGDOWN:
         break;
-    case 23:
-        key = keyname(ch);
-        if (strcmp(key, "^W") == 0) {
-            if (edp->cursx == 0) {
-                del_back(edp);
-                break;
-            }
-            line = &edp->doc->data[edp->cursy];
-            rest = find_prev_simil(line->data, edp->cursx);
-            line_remove_span_qdiff(edp, line, edp->cursx, rest - edp->cursx);
-            edp->cursx = rest;
+    case_key(23, "^W")
+        if (edp->cursx == 0) {
+            del_back(edp);
             break;
         }
+        line = &edp->doc->data[edp->cursy];
+        rest = find_prev_simil(line->data, edp->cursx);
+        line_remove_span_qdiff(edp, line, edp->cursx, rest - edp->cursx);
+        edp->cursx = rest;
         break;
 
-    case 18:
-        key = keyname(ch);
-        if (strcmp(key, "^R") == 0) {
-            diffstk_apply_last(edp, DIREC_BACK);
-        }
+    case_key(18, "^R")
+        diffstk_apply_last(edp, DIREC_BACK);
         break;
-    case 21:
-        key = keyname(ch);
-        if (strcmp(key, "^U") == 0) {
-            diffstk_apply_last(edp, DIREC_FORW);
-        }
+    case_key(21, "^U")
+        diffstk_apply_last(edp, DIREC_FORW);
         break;
-    case 19:
-        key = keyname(ch);
-        if (strcmp(key, "^S") == 0) {
-            save_current(edp->doc, &edp->fileinfo, edp->diffstk);
-        }
+    case_key(19, "^S")
+        save_current(edp->doc, &edp->fileinfo, edp->diffstk);
         break;
-    case 17:
-        key = keyname(ch);
-        if (strcmp(key, "^Q") == 0) {
-            return usr_quit(edp);
+    case_key(17, "^Q")
+        return usr_quit(edp);
+    case_key(24, "^X")
+        save_current(edp->doc, &edp->fileinfo, edp->diffstk);
+        return 0;
+    case_key(31, "^_")
+        if (edp->mode == MODE_SEARCH) {
+            break;
         }
-        break;
-    case 24:
-        key = keyname(ch);
-        if (strcmp(key, "^X") == 0) {
-            save_current(edp->doc, &edp->fileinfo, edp->diffstk);
-            return 0;
-        }
-        break;
-    case 31:
-        key = keyname(ch);
-        if (strcmp(key, "^_") == 0) {
-            if (edp->mode == MODE_SEARCH) {
-                break;
-            }
-            edp->search->win.fullx = edp->win.x;
-            edp->search->win.offy = edp->win.y - edp->search->win.y;
+        edp->search->win.fullx = edp->win.x;
+        edp->search->win.offy = edp->win.y - edp->search->win.y;
 
-            do {
-                cont = render_loop(edp->search);
-            } while (cont);
+        do {
+            cont = render_loop(edp->search);
+        } while (cont);
 
-            edp->exec_line = edp->search->exec_line;
+        edp->exec_line = edp->search->exec_line;
 
-            if (edp->exec_line && edp->exec_line->size) {
-                move_to_word(edp, edp->exec_line->data, edp->exec_line->size);
-            }
+        if (edp->exec_line && edp->exec_line->size) {
+            move_to_word(edp, edp->exec_line->data, edp->exec_line->size);
         }
         break;
-    case 14:
-        key = keyname(ch);
-        if (strcmp(key, "^N") == 0) {
-            if (edp->exec_line && edp->exec_line->size) {
-                move_to_word(edp, edp->exec_line->data,
-                             edp->exec_line->size);
-            }
+    case_key(14, "^N")
+        if (edp->exec_line && edp->exec_line->size) {
+            move_to_word(edp, edp->exec_line->data, edp->exec_line->size);
         }
         break;
 
@@ -1410,74 +1398,61 @@ handle_input(struct Editor *edp, lint_t c) {
         reposition_cursor(edp);
         refresh();
         break;
-
-    case 39:
+    case_key(39, "^?")
         /* fix combination */
         if (edp->mode != MODE_NORMAL) {
             break;
         }
-        key = keyname(ch);
-        if (strcmp(key, "^?") == 0) {
-            show_keymap();
-            lint_t ignore;
-            get_wch(&ignore);
-        }
+        show_keymap();
+        lint_t ignore;
+        get_wch(&ignore);
         break;
-    case 8:
-        key = keyname(ch);
-        if (strcmp(key, "^H") == 0) {
-            mode = edp->mode;
-            if (mode != MODE_NORMAL) {
-                break;
-            }
-            edp->mode = MODE_SELECT_HORIZ;
-            edp->selct.ybeg = edp->cursy;
-            edp->selct.yend = edp->cursy + 1;
-            do {
-                cont = render_loop(edp);
-            } while (cont);
-            edp->mode = mode;
+    case_key(8, "^H")
+        mode = edp->mode;
+        if (mode != MODE_NORMAL) {
+            break;
         }
+        edp->mode = MODE_SELECT_HORIZ;
+        edp->selct.ybeg = edp->cursy;
+        edp->selct.yend = edp->cursy + 1;
+        do {
+            cont = render_loop(edp);
+        } while (cont);
+        edp->mode = mode;
         break;
-    case 22:
-        key = keyname(ch);
-        if (strcmp(key, "^V") == 0) {
-            mode = edp->mode;
-            if (mode != MODE_NORMAL) {
-                break;
-            }
-            edp->mode = MODE_SELECT_VERT;
-            edp->selct.ybeg = edp->cursy;
-            edp->selct.yend = edp->cursy + 1;
-            edp->selct.xbeg = edp->cursx;
-            edp->selct.xend = edp->cursx;
+    case_key(22, "^V")
+        mode = edp->mode;
+        if (mode != MODE_NORMAL) {
+            break;
+        }
+        edp->mode = MODE_SELECT_VERT;
+        edp->selct.ybeg = edp->cursy;
+        edp->selct.yend = edp->cursy + 1;
+        edp->selct.xbeg = edp->cursx;
+        edp->selct.xend = edp->cursx;
 
-            edit_vert(edp);
-            edp->mode = mode;
+        edit_vert(edp);
+        edp->mode = mode;
+        break;
+    case_key(5, "^E")
+        if (edp->mode != MODE_NORMAL) {
+            break;
+        }
+        edp->command->win.fullx = edp->win.x;
+        edp->command->win.offy  = edp->win.y - edp->command->win.y;
+        do {
+            cont = render_loop(edp->command);
+        } while (cont);
+        if (edp->command->exec_line && edp->command->exec_line->size) {
+            line = edp->command->exec_line;
+            exec_command(edp, line->data, line->size);
         }
         break;
-    case 5:
-        key = keyname(ch);
-        if (strcmp(key, "^E") == 0) {
-            if (edp->mode != MODE_NORMAL) {
-                break;
-            }
-            edp->command->win.fullx = edp->win.x;
-            edp->command->win.offy  = edp->win.y - edp->command->win.y;
-            do {
-                cont = render_loop(edp->command);
-            } while (cont);
-            if (edp->command->exec_line && edp->command->exec_line->size) {
-                exec_command(edp, edp->command->exec_line->data,
-                             edp->command->exec_line->size);
-            }
-        }
+    case_key(15, "^O")
+        file_chooser(edp, FILE_ACT_OPEN);
         break;
-    case 15:
-        key = keyname(ch);
-        if (strcmp(key, "^O") == 0) {
-            file_chooser(edp);
-        }
+    case_key(1, "^A")
+        file_chooser(edp, FILE_ACT_RENAME);
         break;
     }
     edp->selct.yend = edp->cursy + 1;
@@ -1485,7 +1460,7 @@ handle_input(struct Editor *edp, lint_t c) {
 }
 
 static void
-file_chooser(struct Editor *edp) {
+file_chooser(struct Editor *edp, enum FILE_ACT action) {
     struct Line own = { 0, 0, 0 };
     struct Line *line = &edp->doc->data[edp->cursy];
     int cont;
@@ -1499,8 +1474,11 @@ file_chooser(struct Editor *edp) {
 
     cursy = edp->files->cursy;
     memcpy(edp->docs + cursy, edp, sizeof(*edp->docs));
-    edp->files->cursy = edp->files->doc->size - 1;
-    edp->files->cursx = 0;
+
+    if (action == FILE_ACT_OPEN) {
+        edp->files->cursy = edp->files->doc->size - 1;
+    }
+    edp->files->cursx = edp->files->doc->data[edp->files->cursy].size;
 
     do {
         cont = render_loop(edp->files);
