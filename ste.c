@@ -26,6 +26,7 @@
 #define INIT_SEARCH     128
 #define INIT_COMMAND    128
 #define SSTR_SIZE       128
+#define MSG_MAIN        ""
 #define MSG_SEARCH      "/: "
 #define MSG_COMMAND     "$: "
 #define MSG_FILES       "@: "
@@ -171,6 +172,11 @@ struct FileInfo {
     char *fname;
 };
 
+struct LinePrelude {
+    char *str;
+    int size;
+};
+
 struct Selection {
     /* xbeg, yend values are excluded */
     int ybeg;
@@ -207,6 +213,7 @@ typedef struct Editor {
         };
         struct DocFile pad;
     };
+    struct LinePrelude prelude;
     struct Window win;
     struct Line *exec_line;
     struct Line *filename;
@@ -755,6 +762,18 @@ init_editor(const char *fname) {
         edp->win.y--;
     }
     edp->opt = OPT_NONE;
+    edp->files->opt = OPT_SHOW_LINENO;
+    edp->search->opt = OPT_SHOW_LINENO;
+    edp->command->opt = OPT_SHOW_LINENO;
+
+    edp->prelude.str = MSG_MAIN;
+    edp->prelude.size = strsize(MSG_MAIN);
+    edp->files->prelude.str = MSG_FILES;
+    edp->files->prelude.size = strsize(MSG_FILES);
+    edp->search->prelude.str = MSG_SEARCH;
+    edp->search->prelude.size = strsize(MSG_SEARCH);
+    edp->command->prelude.str = MSG_COMMAND;
+    edp->command->prelude.size = strsize(MSG_COMMAND);
 
     start_color();
     use_default_colors();
@@ -1490,6 +1509,7 @@ file_chooser(struct Editor *edp, enum FILE_ACT action) {
             edp->files->cursy = cursy;
             edp->files->cursx = 0;
     } else {
+        xrealloc_ptr(&edp->docs, edp->files->doc->size, sizeof(*edp->docs), 0);
         line = &edp->files->doc->data[edp->files->cursy];
         init_docfile(edp, u8str_convert(line->data, line->size));
         insert_doc(&edp->files->doc, edp->files->doc->size, &own, 1);
@@ -1535,13 +1555,14 @@ main(int argc, char *argv[]) {
     do {
         cont = render_loop(edp);
     } while (cont);
+
     return 0;
 }
 
 static int
 count_render_width_upto(struct Window *win, struct Line *line, int size) {
     int nlines = 0;
-    int currline = 0;
+    int currline = win->offx;
     int char_w;
     int i;
 
@@ -1549,9 +1570,9 @@ count_render_width_upto(struct Window *win, struct Line *line, int size) {
         char_w = wcwidth(line->data[i]);
         assert(char_w < win->x);
         if (char_w != -1) {
-            if (currline + char_w > win->x) {
+            if (currline + char_w >= win->x) {
                 nlines++;
-                currline = char_w;
+                currline = win->offx + char_w;
             } else {
                 currline += char_w;
             }
@@ -1560,9 +1581,9 @@ count_render_width_upto(struct Window *win, struct Line *line, int size) {
             currline /= TAB_SIZE;
             currline++;
             currline *= TAB_SIZE;
-            if (currline > win->x) {
+            if (currline >= win->x) {
                 nlines++;
-                currline = 0;
+                currline = win->offx;
             }
         }
     }
@@ -1572,14 +1593,14 @@ count_render_width_upto(struct Window *win, struct Line *line, int size) {
 static lchar_t *
 render_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
                        int width) {
-    int currline = 0;
+    int currline = win->offx;
     int char_w;
 
     while (beg < end && currline < width) {
         char_w = wcwidth(*beg);
         assert(char_w < win->x);
         if (char_w != -1) {
-            if (currline + char_w > win->x) {
+            if (currline + char_w >= win->x) {
                 break;
             } else {
                 currline += char_w;
@@ -1739,11 +1760,11 @@ render_editor_info(struct Editor *edp) {
         str = edp->search->exec_line->data;
         size = edp->search->exec_line->size;
     }
-    msg = wmkstr_nmt(L"file: %ls\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
-                     edp->filename->data,
+    msg = wmkstr_nmt(L"file: %.*ls\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
+                     edp->filename->size, edp->filename->data,
                      size, str,
                      edp->cursy + 1, edp->cursx + 1,
-                     (edp->cursy + 1) * 100 / edp->doc->size);
+                     (edp->cursy + 1) * 100 / (edp->doc->size + 1));
     move_brush(edp, edp->win.y, 0);
     addwstr(msg);
 }
@@ -1768,9 +1789,7 @@ reposition_cursor(struct Editor *edp) {
         y = edp->win.y - 1;
     }
 
-    move_brush(edp, y, x + edp->win.offx);
-
-
+    move_brush(edp, y, x);
 }
 
 static enum EFILE
@@ -2097,7 +2116,7 @@ show_keymap(void) {
        "\nHELP (KEYMAP)"
        "\n"
        "\n    CTRL+CANC: Quit without saving"
-       "\n    CTRL+{UP, DOWN, LEFT RIGHT}: Natural Movement"
+       "\n    CTRL+{UP, DOWN, LEFT RIGHT}: Natural movement"
        "\n    CTRL+{PGUP PGDOWN}: "
        "\n    CTRL+W: Delete one word"
        "\n    CTRL+R: Undo last action"
@@ -2106,9 +2125,11 @@ show_keymap(void) {
        "\n    CTRL+X: Save"
        "\n    CTRL+/: Find a word"
        "\n    CTRL+N: Find next"
-       "\n    CTRL+H: Horizontal Selection Mode"
-       "\n    CTRL+V: Vertical Selection Mode"
-       "\n    CTRL+E: Command Mode"
+       "\n    CTRL+H: Horizontal selection mode"
+       "\n    CTRL+V: Vertical selection mode"
+       "\n    CTRL+E: Command mode"
+       "\n    CTRL+O: Open file"
+       "\n    CTRL+A: Raname current file buffer"
        "\n"
        "\nHELP (END)"
        "\n"
@@ -2374,16 +2395,10 @@ init_split_iter(struct SplitIter *it, lchar_t *str, int size, int beg,
 
 static int
 calc_padlx(struct Editor *edp) {
-    if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
-        return num_digits(edp->doc->size + 1, 10) + 1;
-    } else if (edp->mode == MODE_SEARCH) {
-        return strsize(MSG_SEARCH);
-    } else if (edp->mode == MODE_COMMAND) {
-        return strsize(MSG_COMMAND);
-    } else if (edp->mode == MODE_FILES) {
-        return strsize(MSG_FILES);
+    if (edp->opt & OPT_SHOW_LINENO) {
+        return edp->prelude.size + num_digits(edp->doc->size + 1, 10) + 1;
     }
-    return 0;
+    return edp->prelude.size;
 }
 
 static void
@@ -2410,14 +2425,11 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     struct Selection selct;
     int i;
 
-    if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
-        printw("%*d ", edp->win.offx - 1, y + 1);
-    } else if (edp->mode == MODE_SEARCH) {
-        addstr(MSG_SEARCH);
-    } else if (edp->mode == MODE_COMMAND) {
-        addstr(MSG_COMMAND);
-    } else if (edp->mode == MODE_FILES) {
-        addstr(MSG_FILES);
+    if (edp->opt & OPT_SHOW_LINENO) {
+        printw("%s%*d ", edp->prelude.str,
+               edp->win.offx - 1 - edp->prelude.size, y + 1);
+    } else {
+        addstr(edp->prelude.str);
     }
     likely_if_(edp->mode < MODE_SELECT_HORIZ) {
         addnwstr(str, size);
