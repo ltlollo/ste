@@ -26,8 +26,10 @@
 #define INIT_SEARCH     128
 #define INIT_COMMAND    128
 #define SSTR_SIZE       128
-#define SEARCH_MSG      "search: "
-#define COMMAND_MSG     "$: "
+#define MSG_SEARCH      "/: "
+#define MSG_COMMAND     "$: "
+#define MSG_FILES       "@: "
+#define UNNAMED_FNAME   L"NONAME"
 
 #define MAX_DIFF_SIZE   0x1fffffff
 
@@ -45,7 +47,6 @@
 #define KEY_CTRL_PGDOWN 550
 #define KEY_CTRL_PGUP   555
 
-
 #define xrealloc_arr(p, size)                                                 \
     xrealloc_ptr(p, size, sizeof(*(*p)->data), sizeof(**p))
 
@@ -54,6 +55,7 @@
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define arrsize(cx) ((long)(sizeof(cx) / sizeof(*cx)))
+#define strsize(cx) (arrsize(cx) - 1)
 #define expect(x, v) __builtin_expect(x, v)
 #define unlikely(x) expect(!!(x), 0)
 #define likely(x) expect(!!(x), 1)
@@ -138,6 +140,7 @@ enum TERN {
 enum MODE {
     MODE_NORMAL,
     MODE_COMMAND,
+    MODE_FILES,
     MODE_SEARCH,
     MODE_SELECT_HORIZ,
     MODE_SELECT_VERT,
@@ -174,6 +177,14 @@ struct SplitIter {
     struct Range selct;
 };
 
+struct DocFile {
+    struct LineArr *doc;
+    struct DiffStk *diffstk;
+    int cursy;
+    int cursx;
+    int framebeg;
+};
+
 typedef struct Editor {
     struct LineArr *doc;
     struct DiffStk *diffstk;
@@ -182,7 +193,7 @@ typedef struct Editor {
     int framebeg;
     struct Window win;
     struct Line *exec_line;
-    struct Line filename;
+    struct Line *filename;
     struct FileInfo fileinfo;
     enum MODE mode;
     enum OPT opt;
@@ -190,6 +201,7 @@ typedef struct Editor {
     struct Editor *command;
     struct Editor *files;
     struct Selection selct;
+    struct DocFile *docs;
 } Editor;
 
 static int
@@ -284,6 +296,10 @@ static int edit_vert(struct Editor *);
 static int iter_split(struct SplitIter *, struct Range *);
 static void init_split_iter(struct SplitIter *, lchar_t *, int, int, int);
 static int insert_vert(struct Editor *, lchar_t);
+static lchar_t *u32str_convert(const char *);
+static char * u8str_convert(lchar_t *, int);
+static void file_chooser(struct Editor *);
+static void init_docfile(struct Editor *, const char *);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -543,9 +559,9 @@ merge_lines(struct LineArr *doc, int pos) {
 
 static void
 line_remove_span(struct Line *line, int pos, int delta) {
-    lchar_t *beg = line->data + pos;
+    lchar_t *beg  = line->data + pos;
     lchar_t *prev = line->data + pos + delta;
-    lchar_t *end = line->data + line->size;
+    lchar_t *end  = line->data + line->size;
 
     assert(beg <= end);
     memmove(prev, beg, (end - beg) * sizeof(*line->data));
@@ -553,8 +569,8 @@ line_remove_span(struct Line *line, int pos, int delta) {
 }
 
 static void
-line_remove_span_qdiff(struct Editor *edp, struct Line *line,
-                       int pos, int delta) {
+line_remove_span_qdiff(struct Editor *edp, struct Line *line, int pos,
+                       int delta) {
     assert(delta);
     diffstk_insert_span(edp, line->data + pos, delta);
     line_remove_span(line, pos, delta);
@@ -644,27 +660,38 @@ open_win(struct Editor *edp) {
     edp->win.pgspan = edp->win.y / 4 * 3;
 }
 
+static void init_docfile(struct Editor *dp, const char * fname) {
+    memset(dp, 0, sizeof(*dp));
+
+    xrealloc_arr(&dp->doc, INIT_DOC);
+    xrealloc_arr(&dp->diffstk, INIT_DIFF);
+
+    xinit_doc(dp, INIT_DOC, fname);
+
+    dp->diffstk->curr_save_point = 0;
+
+    memset(dp->diffstk, 0,
+           sizeof(struct DiffStk) + sizeof(*dp->diffstk->data) * INIT_DIFF);
+    dp->diffstk->alloc = INIT_DIFF;
+    dp->diffstk->size = 0;
+}
+
 static struct Editor *
 init_editor(const char *fname) {
-    static struct Editor pub_ed;
+    static struct Editor editor;
     static struct Editor search;
     static struct Editor command;
-
-    struct Editor *edp = &pub_ed;
+    static struct Editor files;
+    struct Editor *edp = &editor;
+    struct Line *line;
+    lchar_t *open_fname;
+    size_t size;
 
     setlocale(LC_ALL, "");
 
-    xrealloc_arr(&edp->doc, INIT_DOC);
-    xrealloc_arr(&edp->diffstk, INIT_DIFF);
+    xrealloc_ptr(&edp->docs, 1, sizeof(*edp->docs), 0);
 
-    xinit_doc(edp, INIT_DOC, fname);
-
-    edp->diffstk->curr_save_point = 0;
-
-    memset(edp->diffstk, 0,
-           sizeof(struct DiffStk) + sizeof(*edp->diffstk->data) * INIT_DIFF);
-    edp->diffstk->alloc = INIT_DIFF;
-    edp->diffstk->size = 0;
+    init_docfile(edp, fname);
 
     open_win(edp);
     atexit(close_win);
@@ -679,8 +706,25 @@ init_editor(const char *fname) {
     command.win.y = 1;
     command.cursy = command.doc->size - 1;
 
-    edp->search = &search;
+    xinit_doc(&files, 2, NULL);
+    files.doc->size = 2;
+    files.mode = MODE_FILES;
+    files.win.y = 1;
+    files.cursy = 0;
+
+    edp->search  = &search;
     edp->command = &command;
+    edp->files   = &files;
+
+    line = &edp->files->doc->data[0];
+    if (fname == NULL || strlen(fname) == 0) {
+        line_insert(line, edp->cursx, UNNAMED_FNAME, strsize(UNNAMED_FNAME));
+    } else {
+        open_fname = u32str_convert(fname);
+        size = wcslen(open_fname);
+        line_insert(line, edp->cursx, open_fname, size);
+    }
+    edp->filename = &edp->files->doc->data[0];
 
     /* share search history between command and normal */
     edp->command->search = edp->search;
@@ -736,6 +780,10 @@ move_right(struct Editor *edp) {
     if (edp->cursx < line->size) {
         edp->cursx++;
     } else if (edp->cursy < edp->doc->size - 1) {
+        unlikely_if_(edp->mode == MODE_COMMAND || edp->mode == MODE_FILES ||
+                     edp->mode == MODE_SEARCH) {
+            return -1;
+        }
         edp->cursy++;
         edp->cursx = 0;
     } else {
@@ -746,8 +794,7 @@ move_right(struct Editor *edp) {
 
 static int
 move_left(struct Editor *edp) {
-
-    if (edp->mode == MODE_SELECT_VERT && edp->selct.xend) {
+    unlikely_if_(edp->mode == MODE_SELECT_VERT && edp->selct.xend) {
         edp->selct.xend--;
         return 0;
     }
@@ -766,6 +813,9 @@ static int
 del_back(struct Editor *edp) {
     struct Line *line;
 
+    unlikely_if_(edp->cursy == 0 && edp->mode == MODE_FILES) {
+        return -1;
+    }
     if (edp->cursy == 0 && edp->cursx == 0) {
         return -1;
     }
@@ -1129,6 +1179,7 @@ handle_input(struct Editor *edp, lint_t c) {
         }
         if (iswprint(ch) || ch == L'\t') {
             diffstk_insert_span(edp, &ch, 1);
+            line = &edp->doc->data[edp->cursy];
             line_insert(line, edp->cursx, &ch, 1);
             edp->cursx++;
             edp->selct.xbeg++;
@@ -1159,6 +1210,8 @@ handle_input(struct Editor *edp, lint_t c) {
             }
             return 0;
         } else if (edp->mode >= MODE_SELECT_HORIZ) {
+            return 0;
+        } else if (edp->mode == MODE_FILES) {
             return 0;
         }
         diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
@@ -1220,6 +1273,10 @@ handle_input(struct Editor *edp, lint_t c) {
         if (edp->cursx < line->size) {
             edp->cursx = find_next_simil(line->data, edp->cursx, line->size);
         } else if (edp->cursy < edp->doc->size - 1) {
+            unlikely_if_(edp->mode == MODE_COMMAND || edp->mode == MODE_FILES ||
+                         edp->mode == MODE_SEARCH) {
+                return -1;
+            }
             edp->cursx = 0;
             edp->cursy++;
         }
@@ -1397,20 +1454,61 @@ handle_input(struct Editor *edp, lint_t c) {
             if (edp->mode != MODE_NORMAL) {
                 break;
             }
+            edp->command->win.fullx = edp->win.x;
+            edp->command->win.offy  = edp->win.y - edp->command->win.y;
+            do {
+                cont = render_loop(edp->command);
+            } while (cont);
+            if (edp->command->exec_line && edp->command->exec_line->size) {
+                exec_command(edp, edp->command->exec_line->data,
+                             edp->command->exec_line->size);
+            }
         }
-        edp->command->win.fullx = edp->win.x;
-        edp->command->win.offy = edp->win.y - edp->command->win.y;
-        do {
-            cont = render_loop(edp->command);
-        } while (cont);
-        if (edp->command->exec_line && edp->command->exec_line->size) {
-            exec_command(edp, edp->command->exec_line->data,
-                         edp->command->exec_line->size);
+        break;
+    case 15:
+        key = keyname(ch);
+        if (strcmp(key, "^O") == 0) {
+            file_chooser(edp);
         }
         break;
     }
     edp->selct.yend = edp->cursy + 1;
     return 1;
+}
+
+static void
+file_chooser(struct Editor *edp) {
+    struct Line own = { 0, 0, 0 };
+    struct Line *line = &edp->doc->data[edp->cursy];
+    int cont;
+    int cursy;
+
+    if (edp->mode != MODE_NORMAL) {
+        return;
+    }
+    edp->files->win.fullx = edp->win.x;
+    edp->files->win.offy = edp->win.y - edp->files->win.y;
+
+    cursy = edp->files->cursy;
+    memcpy(edp->docs + cursy, edp, sizeof(*edp->docs));
+    edp->files->cursy = edp->files->doc->size - 1;
+    edp->files->cursx = 0;
+
+    do {
+        cont = render_loop(edp->files);
+    } while (cont);
+
+    if (edp->files->cursy != edp->files->doc->size - 1) {
+        memcpy(edp, edp->docs + edp->files->cursy, sizeof(*edp->docs));
+    } else if (edp->files->doc->data[edp->files->cursy].size == 0) {
+            edp->files->cursy = cursy;
+            edp->files->cursx = 0;
+    } else {
+        line = &edp->files->doc->data[edp->files->cursy];
+        init_docfile(edp, u8str_convert(line->data, line->size));
+        insert_doc(&edp->files->doc, edp->files->doc->size, &own, 1);
+    }
+    edp->filename = &edp->files->doc->data[edp->files->cursy];
 }
 
 static void
@@ -1652,8 +1750,8 @@ render_editor_info(struct Editor *edp) {
         str = edp->search->exec_line->data;
         size = edp->search->exec_line->size;
     }
-    msg = wmkstr_nmt(L"file: %s\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
-                     edp->fileinfo.fname,
+    msg = wmkstr_nmt(L"file: %ls\t\t\t#: %.*ls\t\t\t%d,%d\t%lld%%",
+                     edp->filename->data,
                      size, str,
                      edp->cursy + 1, edp->cursx + 1,
                      (edp->cursy + 1) * 100 / edp->doc->size);
@@ -2290,9 +2388,11 @@ calc_padlx(struct Editor *edp) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         return num_digits(edp->doc->size + 1, 10) + 1;
     } else if (edp->mode == MODE_SEARCH) {
-        return arrsize(SEARCH_MSG) - 1;
+        return strsize(MSG_SEARCH);
     } else if (edp->mode == MODE_COMMAND) {
-        return arrsize(COMMAND_MSG) - 1;
+        return strsize(MSG_COMMAND);
+    } else if (edp->mode == MODE_FILES) {
+        return strsize(MSG_FILES);
     }
     return 0;
 }
@@ -2324,9 +2424,11 @@ paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x) {
     if (edp->mode == MODE_NORMAL && edp->opt & OPT_SHOW_LINENO) {
         printw("%*d ", edp->win.offx - 1, y + 1);
     } else if (edp->mode == MODE_SEARCH) {
-        addstr(SEARCH_MSG);
+        addstr(MSG_SEARCH);
     } else if (edp->mode == MODE_COMMAND) {
-        addstr(COMMAND_MSG);
+        addstr(MSG_COMMAND);
+    } else if (edp->mode == MODE_FILES) {
+        addstr(MSG_FILES);
     }
     likely_if_(edp->mode < MODE_SELECT_HORIZ) {
         addnwstr(str, size);
@@ -2485,3 +2587,20 @@ insert_vert(struct Editor *edp, lchar_t ch) {
     return 0;
 }
 
+static lchar_t *
+u32str_convert(const char *fname) {
+
+    assert(fname);
+    assert(strlen(fname));
+
+    return UNNAMED_FNAME;
+}
+
+static char *
+u8str_convert(lchar_t *fname, int size) {
+
+    assert(fname);
+    assert(size);
+
+    return NULL;
+}
