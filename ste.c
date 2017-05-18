@@ -29,7 +29,7 @@
 #define MSG_SEARCH      "/: "
 #define MSG_COMMAND     "$: "
 #define MSG_FILES       "@: "
-#define UNNAMED_FNAME   L"NONAME"
+#define UNNAMED_FNAME   "NONAME"
 
 #define MAX_DIFF_SIZE   0x1fffffff
 
@@ -177,20 +177,22 @@ struct SplitIter {
     struct Range selct;
 };
 
-struct DocFile {
-    struct LineArr *doc;
-    struct DiffStk *diffstk;
-    int cursy;
-    int cursx;
+#define EDITOR_PRIV             \
+    struct LineArr *doc;        \
+    struct DiffStk *diffstk;    \
+    int cursy;                  \
+    int cursx;                  \
     int framebeg;
+
+struct DocFile {
+    EDITOR_PRIV
 };
 
 typedef struct Editor {
-    struct LineArr *doc;
-    struct DiffStk *diffstk;
-    int cursy;
-    int cursx;
-    int framebeg;
+    union {
+        struct { EDITOR_PRIV };
+        struct DocFile pad;
+    };
     struct Window win;
     struct Line *exec_line;
     struct Line *filename;
@@ -298,8 +300,10 @@ static void init_split_iter(struct SplitIter *, lchar_t *, int, int, int);
 static int insert_vert(struct Editor *, lchar_t);
 static lchar_t *u32str_convert(const char *);
 static char * u8str_convert(lchar_t *, int);
-static void file_chooser(struct Editor *);
 static void init_docfile(struct Editor *, const char *);
+static lchar_t denormalize_xcale(unsigned char);
+static int normalize_xcape(lchar_t);
+static void file_chooser(struct Editor *);
 
 static void
 diffstk_incr(struct DiffStk *diffstk) {
@@ -660,20 +664,21 @@ open_win(struct Editor *edp) {
     edp->win.pgspan = edp->win.y / 4 * 3;
 }
 
-static void init_docfile(struct Editor *dp, const char * fname) {
-    memset(dp, 0, sizeof(*dp));
+static void
+init_docfile(struct Editor *edp, const char * fname) {
+    memset(edp, 0, sizeof(edp->pad));
 
-    xrealloc_arr(&dp->doc, INIT_DOC);
-    xrealloc_arr(&dp->diffstk, INIT_DIFF);
+    xrealloc_arr(&edp->doc, INIT_DOC);
+    xrealloc_arr(&edp->diffstk, INIT_DIFF);
 
-    xinit_doc(dp, INIT_DOC, fname);
+    xinit_doc(edp, INIT_DOC, fname);
 
-    dp->diffstk->curr_save_point = 0;
+    edp->diffstk->curr_save_point = 0;
 
-    memset(dp->diffstk, 0,
-           sizeof(struct DiffStk) + sizeof(*dp->diffstk->data) * INIT_DIFF);
-    dp->diffstk->alloc = INIT_DIFF;
-    dp->diffstk->size = 0;
+    memset(edp->diffstk, 0,
+           sizeof(struct DiffStk) + sizeof(*edp->diffstk->data) * INIT_DIFF);
+    edp->diffstk->alloc = INIT_DIFF;
+    edp->diffstk->size = 0;
 }
 
 static struct Editor *
@@ -718,7 +723,8 @@ init_editor(const char *fname) {
 
     line = &edp->files->doc->data[0];
     if (fname == NULL || strlen(fname) == 0) {
-        line_insert(line, edp->cursx, UNNAMED_FNAME, strsize(UNNAMED_FNAME));
+        line_insert(line, edp->cursx, L""UNNAMED_FNAME,
+                    strsize(UNNAMED_FNAME));
     } else {
         open_fname = u32str_convert(fname);
         size = wcslen(open_fname);
@@ -1168,13 +1174,15 @@ handle_input(struct Editor *edp, lint_t c) {
 
     switch (ch) {
     default:
-        if (edp->mode == MODE_SELECT_HORIZ) {
+        unlikely_if_(edp->mode == MODE_SELECT_HORIZ) {
             delete_lines(edp, &edp->selct);
             line = &edp->doc->data[edp->cursy];
-        } else if (edp->mode == MODE_SELECT_VERT) {
+        } else unlikely_if_(edp->mode == MODE_SELECT_VERT) {
             if (iswprint(ch) || ch == L'\t') {
                 insert_vert(edp, ch);
             }
+            break;
+        } else unlikely_if_(edp->mode == MODE_FILES && !is_ascii(&ch, 1)) {
             break;
         }
         if (iswprint(ch) || ch == L'\t') {
@@ -1537,12 +1545,15 @@ render_loop(struct Editor *edp) {
 int
 main(int argc, char *argv[]) {
     static struct Editor *edp;
+    char *fname;
     int cont;
 
     if (argc - 1 != 1) {
-        errx(1, "need help?");
+        fname = UNNAMED_FNAME;
+    } else {
+        fname = argv[1];
     }
-    edp = init_editor(argv[1]);
+    edp = init_editor(fname);
     do {
         cont = render_loop(edp);
     } while (cont);
@@ -2589,18 +2600,104 @@ insert_vert(struct Editor *edp, lchar_t ch) {
 
 static lchar_t *
 u32str_convert(const char *fname) {
+    static lchar_t res[4096 * 3 + 1];
+    lchar_t *beg = res;
+    size_t usize;
+    int size;
+    int i;
 
     assert(fname);
-    assert(strlen(fname));
+    usize = strlen(fname);
+    assert(usize && usize < 4096);
+    size = usize;
 
-    return UNNAMED_FNAME;
+    for (i = 0; i < size; i++) {
+        likely_if_((fname[i] >= 0x20 && fname[i] < 0x7f) || fname[i] == '\t') {
+            *beg = fname[i];
+            beg++;
+        } else {
+            beg[0] = L'\\';
+            beg[1] = denormalize_xcale((unsigned char)fname[i] >> 4);
+            beg[2] = denormalize_xcale((unsigned char)fname[i] & 0xf);
+            beg += 3;
+        }
+    }
+    *beg = L'\0';
+    return res;
+}
+
+static lchar_t
+denormalize_xcale(unsigned char in) {
+    if (in < 0xa) {
+        return in + L'0';
+    } else {
+        return in - 0xa + L'A';
+    }
+}
+
+static int
+normalize_xcape(lchar_t in) {
+    if (in >= L'0' && in <= L'9') {
+        return in - L'0';
+    } else if (in >= L'a' && in <= L'f') {
+        return in - L'a' + 10;
+    } else if (in >= L'A' && in <= L'F') {
+        return in - L'A' + 10;
+    }
+    return -1;
 }
 
 static char *
 u8str_convert(lchar_t *fname, int size) {
+    static char res[4096 + 1];
+    char *beg = res;
+    char *end = res + 4096;
+    lchar_t *fbeg = fname;
+    lchar_t *fend = fname + size;
+    int norm0;
+    int norm1;
 
     assert(fname);
     assert(size);
 
-    return NULL;
+    while (fbeg != fend) {
+        if (beg == end) {
+            return NULL;
+        }
+        if (*fbeg == L'\\') {
+            fbeg++;
+            if (fbeg == fend) {
+                *beg = '\\';
+                beg++;
+                break;
+            }
+            norm0 = normalize_xcape(*fbeg);
+            if (norm0 == -1) {
+                *beg = (char)*fbeg;
+                beg++;
+            }
+            fbeg++;
+            if (fbeg == fend) {
+                *beg = norm0;
+                beg++;
+                break;
+            }
+            norm1 = normalize_xcape(*fbeg);
+            if (norm1 == -1) {
+                *beg = norm0;
+                beg++;
+                continue;
+            }
+            *beg = (norm0 << 4) | norm1;
+            beg++;
+            fbeg++;
+        } else {
+            *beg = *fbeg;
+            beg++;
+            fbeg++;
+        }
+    }
+    assert(beg != res + 4096 + 1);
+    *beg = '\0';
+    return res;
 }
