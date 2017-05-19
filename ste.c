@@ -62,11 +62,11 @@
 #define likely(x) expect(!!(x), 1)
 #define unlikely_if_(x) if (unlikely(x))
 #define likely_if_(x) if (likely(x))
-#define case_key(n, s)                      \
-    case n:                                 \
-        key = keyname(ch);                  \
-        unlikely_if_(strcmp(key, s) != 0) { \
-            break;                          \
+#define case_key(n, s)                                                        \
+    case n:                                                                   \
+        key = keyname(ch);                                                    \
+        unlikely_if_(strcmp(key, s) != 0) {                                   \
+            break;                                                            \
         }
 
 
@@ -195,11 +195,11 @@ struct SplitIter {
     struct Range selct;
 };
 
-#define EDITOR_PRIV             \
-    struct LineArr *doc;        \
-    struct DiffStk *diffstk;    \
-    int cursy;                  \
-    int cursx;                  \
+#define EDITOR_PRIV                                                           \
+    struct LineArr *doc;                                                      \
+    struct DiffStk *diffstk;                                                  \
+    int cursy;                                                                \
+    int cursx;                                                                \
     int framebeg;
 
 struct DocFile {
@@ -320,7 +320,7 @@ static int iter_split(struct SplitIter *, struct Range *);
 static void init_split_iter(struct SplitIter *, lchar_t *, int, int, int);
 static int insert_vert(struct Editor *, lchar_t);
 static lchar_t *u32str_convert(const char *);
-static char * u8str_convert(lchar_t *, int);
+static char *u8str_convert(lchar_t *, int);
 static void init_docfile(struct Editor *, const char *);
 static lchar_t denormalize_xcale(unsigned char);
 static int normalize_xcape(lchar_t);
@@ -1520,7 +1520,7 @@ file_chooser(struct Editor *edp, enum FILE_ACT action) {
 static void
 calc_window_size(struct Editor *edp) {
     edp->win.offx = calc_padlx(edp);
-    edp->win.x = edp->win.fullx - edp->win.offx;
+    edp->win.x = edp->win.fullx;
 }
 
 static int
@@ -1610,7 +1610,7 @@ render_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
             currline /= TAB_SIZE;
             currline++;
             currline *= TAB_SIZE;
-            if (currline > win->x) {
+            if (currline >= win->x) {
                 beg++;
                 break;
             }
