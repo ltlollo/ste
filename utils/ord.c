@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <fcntl.h>
 #include <memory.h>
 #include <stdio.h>
@@ -8,13 +7,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef SLOW
+#include <assert.h>
+#define min(a, b) (a < b ? a : b)
+
+#else
+#define min(a, b) (a)
+#define assert(a)
+#endif
+
 struct Func {
 	char *name;
+	size_t namesz;
 	char *alltxt;
-	int namesz;
-	int alltxtsz;
+	size_t alltxtsz;
 	char *body;
-	int bodysz;
+	size_t bodysz;
 };
 
 struct Data {
@@ -23,12 +31,6 @@ struct Data {
 	char *text;
 	size_t size;
 };
-
-#ifdef SLOW
-#define min(a, b) (a < b ? a : b)
-#else
-#define min(a, b) (a)
-#endif
 
 void
 swap(struct Func *arr, int i, int j) {
@@ -138,6 +140,7 @@ main() {
 	char *call_beg;
 	FILE *nfile;
 	FILE *fsigs;
+	char *nl = "\n\n";
 
 	nfile = fopen("new.ste.c", "w");
 	assert(nfile);
@@ -151,7 +154,7 @@ main() {
 	nfuncs = data.nfuncs;
 	text   = data.text;
 
-	fprintf(nfile, "%.*s", (int)(funcs->alltxt - text), text);
+	fwrite(text, 1, funcs->alltxt - text, nfile);
 	
 	ordered = malloc(nfuncs * sizeof *ordered);
 	memcpy(ordered, funcs, nfuncs * sizeof *ordered);
@@ -165,7 +168,8 @@ main() {
 	i = 1;
 
 	for(curr_func  = ordered; curr_func != ordered + nfuncs; curr_func++) {
-		fprintf(nfile, "%.*s\n\n", curr_func->alltxtsz, curr_func->alltxt);
+		fwrite(curr_func->alltxt, 1, curr_func->alltxtsz, nfile);
+		fwrite(nl, 1, 2, nfile);
 		if (i == nfuncs || curr_func - ordered == nfuncs - 1) {
 			continue;
 		}
@@ -207,8 +211,9 @@ main() {
 
 	for (i = 1; i < nfuncs; i++) {
 		ordered[i].body[-1] = ';';
-		fprintf(fsigs, "%.*s\n", (int)(ordered[i].body - ordered[i].alltxt),
-				ordered[i].alltxt);
+		fwrite(ordered[i].alltxt, 1, ordered[i].body - ordered[i].alltxt,
+			   fsigs);
+		fwrite(nl, 1, 2, fsigs);
 	}
 	return 0;
 }
