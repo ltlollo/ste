@@ -9,10 +9,7 @@
 
 #ifdef SLOW
 #include <assert.h>
-#define min(a, b) (a < b ? a : b)
-
 #else
-#define min(a, b) (a)
 #define assert(a)
 #endif
 
@@ -141,6 +138,7 @@ main() {
 	FILE *nfile;
 	FILE *fsigs;
 	char *nl = "\n\n";
+	size_t size;
 
 	nfile = fopen("new.ste.c", "w");
 	assert(nfile);
@@ -187,8 +185,11 @@ main() {
 				for (to_ord = ordered;
 					 to_ord < ordered + nfuncs && to_ord < ordered + i;
 					 to_ord++) {
-					if (memcmp(call_beg, to_ord->name,
-							   min(to_ord->namesz, call_end - call_beg)) == 0) {
+					size = call_end - call_beg;
+					if (size != to_ord->namesz) {
+						continue;
+					}
+					if (memcmp(call_beg, to_ord->name, size) == 0) {
 						break;
 					}
 				}
@@ -197,9 +198,11 @@ main() {
 				}
 				for (to_ord = ordered + i + 1; to_ord < ordered + nfuncs;
 					 to_ord++) {
-					if (memcmp(call_beg, to_ord->name,
-							   min(to_ord->namesz, call_end - call_beg))
-						== 0) {
+					size = call_end - call_beg;
+					if (size != to_ord->namesz) {
+						continue;
+					}
+					if (memcmp(call_beg, to_ord->name, size) == 0) {
 						swap(ordered, i, to_ord - ordered);
 						i++;
 						break;
@@ -208,11 +211,10 @@ main() {
 			}
 		}
 	}
-
 	for (i = 1; i < nfuncs; i++) {
 		ordered[i].body[-1] = ';';
-		fwrite(ordered[i].alltxt, 1, ordered[i].body - ordered[i].alltxt,
-			   fsigs);
+		size = ordered[i].body - ordered[i].alltxt;
+		fwrite(ordered[i].alltxt, 1, size, fsigs);
 		fwrite(nl, 1, 2, fsigs);
 	}
 	return 0;
