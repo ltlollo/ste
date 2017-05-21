@@ -1,4 +1,4 @@
-static int
+static enum IRET
 render_loop(struct Editor *edp);
 
 static void
@@ -19,7 +19,7 @@ render_editor_info(struct Editor *edp);
 static void
 reposition_cursor(struct Editor *edp);
 
-static int
+static enum IRET
 handle_input(struct Editor *edp, lint_t c);
 
 static void
@@ -249,3 +249,5 @@ close_win(void);
 static int
 delete_lines_positrange(struct Editor *edp, struct Selection *selct);
 
+enum IRET
+switch_editor(struct Editor *from, struct Editor *to); 
