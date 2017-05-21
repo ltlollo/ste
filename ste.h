@@ -36,7 +36,7 @@ count_nlines(struct Editor *edp, struct Line *line);
 
 static lchar_t *
 render_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
-                       int width);
+					   int width);
 
 static void
 paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x);
@@ -103,7 +103,7 @@ diffstk_apply_last(struct Editor *edp, enum DIREC direc);
 
 static void
 save_current(struct LineArr *doc, struct FileInfo *info,
-             struct DiffStk *diffstk);
+			 struct DiffStk *diffstk);
 
 static int
 usr_quit(struct Editor *edp);
@@ -134,7 +134,7 @@ regularize_selection(struct Selection *in, struct Selection *out);
 
 static void
 init_split_iter(struct SplitIter *it, lchar_t *str, int size, int beg,
-                int end);
+				int end);
 
 static int
 iter_split(struct SplitIter *it, struct Range *delta);
@@ -165,7 +165,7 @@ diffstk_apply_all(struct Editor *edp, struct DiffStk *ds, enum DIREC direc);
 
 static void
 save_file_utf8(struct LineArr *doc, struct FileInfo *info,
-               struct DiffStk *diffstk);
+			   struct DiffStk *diffstk);
 
 static char *
 mkstr_nmt(const char *fmt, ...);
@@ -199,11 +199,11 @@ open_win(struct Editor *edp);
 
 static int
 replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
-             int size, lchar_t *nstr, int nsize);
+			 int size, lchar_t *nstr, int nsize);
 
 static lchar_t *
 render_back_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
-                            int width);
+							int width);
 
 static int
 move_down_natural(struct Editor *edp);
@@ -222,7 +222,7 @@ u32str_convert(const char *fname);
 
 static void
 line_remove_span_qdiff(struct Editor *edp, struct Line *line, int pos,
-                       int delta);
+					   int delta);
 
 static struct Editor *
 init_editor(const char *fname);
@@ -235,7 +235,7 @@ is_ascii(lchar_t *str, int size);
 
 static int
 replace_word_positrange(struct Editor *edp, struct Selection *selct,
-                        lchar_t *str, int size, lchar_t *nstr, int nsize);
+						lchar_t *str, int size, lchar_t *nstr, int nsize);
 
 static void
 insert_doc_nl_times(struct LineArr **doc, int pos, int size);
