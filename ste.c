@@ -17,7 +17,7 @@
 #define _XOPEN_SOURCE_EXTENDED
 #include <ncursesw/ncurses.h>
 
-#define TAB_SIZE		8
+#define TAB_SIZE		4
 #define SMALL_STR		8
 #define INIT_DIFF		4096
 #define INIT_SUBDIFF	128
@@ -31,7 +31,7 @@
 #define MSG_SEARCH		"/: "
 #define MSG_COMMAND		"$: "
 #define MSG_FILES		"@: "
-#define UNNAMED_FNAME	"NONAME"
+#define UNNAMED_FN	"NONAME"
 
 #define MAX_DIFF_SIZE	0x1fffffff
 
@@ -249,7 +249,7 @@ main(int argc, char *argv[]) {
 	enum IRET cont;
 
 	if (argc - 1 != 1) {
-		fname = UNNAMED_FNAME;
+		fname = UNNAMED_FN;
 	} else {
 		fname = argv[1];
 	}
@@ -305,10 +305,10 @@ init_editor(const char *fname) {
 	edp->files   = &files;
 	edp->paste	 = &paste;
 
+
 	line = &edp->files->doc->data[0];
 	if (fname == NULL || strlen(fname) == 0) {
-		line_insert(line, edp->cursx, L""UNNAMED_FNAME,
-					strsize(UNNAMED_FNAME));
+		line_insert(line, edp->cursx, L""UNNAMED_FN, strsize(UNNAMED_FN));
 	} else {
 		open_fname = u32str_convert(fname);
 		size = wcslen(open_fname);
@@ -319,6 +319,7 @@ init_editor(const char *fname) {
 	edp->command->search = edp->search;
 	edp->paste->search = edp->search;
 	edp->paste->command = edp->command;
+	edp->paste->paste = edp->paste;
 
 	edp->win.fullx = COLS;
 	edp->win.y = LINES;
@@ -631,6 +632,7 @@ handle_input(struct Editor *edp, lint_t c) {
 	const char *key;
 	enum IRET cont;
 	int mode;
+	int size;
 
 	assert(edp->cursy < edp->doc->size);
 	assert(edp->cursx <= line->size);
@@ -744,7 +746,8 @@ handle_input(struct Editor *edp, lint_t c) {
 		if (edp->cursx < line->size) {
 			edp->cursx = find_next_simil(line->data, edp->cursx, line->size);
 		} else if (edp->cursy < edp->doc->size - 1) {
-			unlikely_if_(edp->mode == MODE_COMMAND || edp->mode == MODE_FILES ||
+			unlikely_if_(edp->mode == MODE_COMMAND	||
+						 edp->mode == MODE_FILES	||
 						 edp->mode == MODE_SEARCH) {
 				return IRET_CONT;
 			}
@@ -898,19 +901,32 @@ handle_input(struct Editor *edp, lint_t c) {
 	case_key(1, "^A")
 		file_chooser(edp, FILE_ACT_RENAME);
 		break;
-	case_key(16, "^P")
+	case_key(2, "^B")
 		if (edp->mode == MODE_PASTEBUF) {
 			return IRET_STOP;
 		}
-		if (edp->mode != MODE_NORMAL) {
+		if (edp->mode != MODE_NORMAL && edp->mode != MODE_SELECT_HORIZ &&
+			edp->mode != MODE_SELECT_VERT) {
 			break;
 		}
 		memcpy(&edp->paste->win, &edp->win, sizeof(edp->win));
-		edp->paste->cursx = 0;
-		edp->paste->cursy = 0;
-		edp->paste->framebeg = 0;
 		switch_editor(edp, edp->paste);
 		break;
+	case_key(20, "^T")
+		copy_action(edp);
+		break;
+	case_key(25, "^Y")
+		copy_action(edp);
+		if (edp->mode == MODE_NORMAL) {
+			edp->selct.ybeg = edp->cursy;
+			edp->selct.yend = edp->cursy + 1;
+		}
+		delete_lines(edp, &edp->selct);
+		if (edp->mode == MODE_SELECT_HORIZ) {
+			return IRET_STOP;
+		}
+		break;
+
 	}
 	edp->selct.yend = edp->cursy + 1;
 	return IRET_CONT;
@@ -1185,7 +1201,7 @@ delete_lines(struct Editor *edp, struct Selection *selct) {
 	struct Selection f;
 	struct Selection s;
 
-	unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
+	unlikely_if_(edp->mode != MODE_SELECT_HORIZ && edp->mode != MODE_NORMAL) {
 		return -1;
 	}
 	if (selct->ybeg >= selct->yend) {
@@ -1501,14 +1517,12 @@ static int
 del_back(struct Editor *edp) {
 	struct Line *line;
 
-	unlikely_if_(edp->cursy == 0 && edp->mode == MODE_FILES) {
-		return -1;
-	}
 	if (edp->cursy == 0 && edp->cursx == 0) {
 		return -1;
 	}
 	if (edp->cursx == 0) {
-		if (edp->mode != MODE_NORMAL && edp->mode != MODE_SELECT_VERT) {
+		if (edp->mode != MODE_NORMAL && edp->mode != MODE_SELECT_VERT &&
+			edp->mode != MODE_PASTEBUF) {
 			return -1;
 		}
 		edp->cursy--;
@@ -2483,8 +2497,6 @@ replace_word_positrange(struct Editor *edp, struct Selection *selct,
 	lchar_t *ccurr; 
 	int xcurr = 0;
 	int xend;
-	long pos;
-	struct Diff *dcurr;
 
 	unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
 		return -1;
@@ -2539,15 +2551,7 @@ replace_word_positrange(struct Editor *edp, struct Selection *selct,
 	if (found == 0) {
 		free(subp->diffstk);
 	} else {
-		xrealloc_arr(&subp->diffstk, subp->diffstk->size);
-		subp->diffstk->alloc = subp->diffstk->size;
-
-		diffstk_reserve(&edp->diffstk);
-		pos   = edp->diffstk->curr;
-		dcurr = edp->diffstk->data + pos;
-		diffstk_incr(edp->diffstk);
-		dcurr->type = DIFF_TYPE_SUBSTCK;
-		dcurr->diff_sub = subp->diffstk;
+		diffstk_add_substk(edp, subp);
 	}
 	edp->cursx = subp->cursx;
 	edp->cursy = subp->cursy;
@@ -2603,16 +2607,14 @@ static int
 delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
 	int ycurr = selct->ybeg;
 	int size;
-	int pos;
 	struct Editor sub = {
 		.doc = edp->doc,
 		.diffstk = NULL,
 	};
 	struct Editor *subp = &sub;
-	struct Diff *dcurr;
 	int i;
 
-	unlikely_if_(edp->mode != MODE_SELECT_HORIZ) {
+	unlikely_if_(edp->mode != MODE_SELECT_HORIZ && edp->mode != MODE_NORMAL) {
 		return -1;
 	}
 	assert(selct->ybeg <= selct->yend);
@@ -2639,6 +2641,15 @@ delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
 	for (i = 1; i < edp->selct.yend - edp->selct.ybeg; ++i) {
 		del_back(subp);
 	}
+	diffstk_add_substk(edp, subp);
+	return 0;
+}
+
+static void
+diffstk_add_substk(struct Editor *edp, struct Editor *subp) {
+	struct Diff *dcurr;
+	int pos;
+
 	xrealloc_arr(&subp->diffstk, subp->diffstk->size);
 	subp->diffstk->alloc = subp->diffstk->size;
 
@@ -2651,6 +2662,90 @@ delete_lines_positrange(struct Editor *edp, struct Selection *selct) {
 
 	edp->cursx = subp->cursx;
 	edp->cursy = subp->cursy;
-	return 0;
 }
 
+
+static void
+insert_doc_copy(struct LineArr **doc, int pos, struct Line *cpy, int size) {
+	struct Line line;
+	int i;
+
+	for (i = 0; i < size; i++) {
+		memset(&line, 0, sizeof(line));
+		line_insert(&line, 0, cpy[i].data, cpy[i].size);
+		insert_doc(doc, pos, &line, 1);
+	}
+}
+
+static void
+diffstk_insert_lines(struct Editor *edp, int pos, struct Line *cpy, int size) {
+	struct Editor sub = {
+		.doc = edp->doc,
+		.diffstk = NULL,
+	};
+	struct Editor *subp = &sub;
+	struct Line own = { 0, 0, 0 };
+	int i;
+
+	if (edp->diffstk == NULL) {
+		return;
+	}
+	xrealloc_arr(&subp->diffstk, INIT_SUBDIFF);
+	memset(subp->diffstk, 0, sizeof(*subp->diffstk));
+	subp->diffstk->alloc = INIT_SUBDIFF;
+
+	assert(pos < edp->doc->size);
+	edp->cursy = pos;
+	edp->cursx = 0;
+
+	for (i = 0; i < size; i++) {
+		diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
+		insert_doc(&edp->doc, edp->cursy, &own, 1);
+		edp->cursx = 0;
+		edp->cursy++;
+	}
+	edp->cursy = pos;
+	for (i = 0; i < size; i++) {
+		diffstk_insert_span(subp, cpy[i].data, cpy[i].size);
+	}
+	diffstk_add_substk(edp, subp);
+}
+
+
+static void
+copy_action(struct Editor *edp) {
+	struct Line *line;
+	struct Selection f;
+	struct Selection s;
+	int size;
+
+	if (edp->mode == MODE_PASTEBUF) {
+		return;
+	}
+	edp->paste->cursx = 0;
+	edp->paste->cursy = 0;
+	edp->paste->framebeg = 0;
+	edp->paste->doc->size = 0;
+	if (edp->mode == MODE_NORMAL) {
+		size = 1;
+		line = &edp->doc->data[edp->cursy];
+		insert_doc_copy(&edp->paste->doc, 0, line, size);
+	} else if (edp->mode == MODE_SELECT_HORIZ) {
+		if (edp->selct.ybeg >= edp->selct.yend) {
+			f.ybeg = 0;
+			f.yend = edp->selct.yend;
+			s.ybeg = edp->selct.ybeg + 1;
+			s.yend = edp->doc->size;
+			size = f.yend - f.ybeg;
+			line = &edp->doc->data[f.ybeg];
+			insert_doc(&edp->paste->doc, 0, line, size);
+			size = s.yend - s.ybeg;
+			line = &edp->doc->data[s.ybeg];
+			insert_doc_copy(&edp->paste->doc, f.yend - f.ybeg, line, size);
+		} else {
+			size = edp->selct.yend - edp->selct.ybeg;
+			line = &edp->doc->data[edp->selct.ybeg];
+			insert_doc_copy(&edp->paste->doc, 0, line, size);
+		}
+	}
+}

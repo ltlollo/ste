@@ -1,32 +1,35 @@
+static struct Editor *
+init_editor(const char *fname);
+
 static enum IRET
 render_loop(struct Editor *edp);
 
-static void
-clear_window(struct Editor *edp);
-
-static void
-calc_window_size(struct Editor *edp);
-
-static void
-reposition_frame(struct Editor *edp);
-
-static void
-render_lines(struct Editor *edp);
-
-static void
-render_editor_info(struct Editor *edp);
-
-static void
-reposition_cursor(struct Editor *edp);
+static lchar_t *
+u32str_convert(const char *fname);
 
 static enum IRET
 handle_input(struct Editor *edp, lint_t c);
 
-static void
-move_brush(struct Editor *edp, int y, int x);
+static lchar_t
+denormalize_xcale(unsigned char in);
 
 static int
-calc_padlx(struct Editor *edp);
+find_prev_simil(const void *data, int cursor);
+
+static int
+find_next_simil(const void *data, int cursor, int size);
+
+static int
+usr_quit(struct Editor *edp);
+
+enum IRET
+switch_editor(struct Editor *from, struct Editor *to);
+
+static filt_fn_t
+find_match_fil(lint_t ch);
+
+static char *
+mkstr_nmt(const char *fmt, ...);
 
 static int
 count_lines(struct Editor *edp);
@@ -38,14 +41,46 @@ static lchar_t *
 render_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
 					   int width);
 
-static void
-paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x);
-
 static wchar_t *
 wmkstr_nmt(const wchar_t *fmt, ...);
 
 static int
 count_render_width_upto(struct Window *win, struct Line *line, int size);
+
+static int
+num_digits(int i, int base);
+
+static int
+count_nlines_upto(struct Editor *edp, struct Line *line, int size);
+
+static int
+delete_lines_positrange(struct Editor *edp, struct Selection *selct);
+
+static enum EFILE
+load_file_utf8(struct Editor *edp, const char *fname);
+
+static char *
+u8str_convert(lchar_t *fname, int size);
+
+static int
+calc_padlx(struct Editor *edp);
+
+static int
+replace_word_positrange(struct Editor *edp, struct Selection *selct,
+						lchar_t *str, int size, lchar_t *nstr, int nsize);
+
+static lchar_t *
+render_back_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
+							int width);
+
+static void
+paint_string(struct Editor *edp, lchar_t *str, int size, int y, int x);
+
+static void
+reposition_cursor(struct Editor *edp);
+
+void
+switch_docfile(struct DocFile *f, struct DocFile *s);
 
 static int
 delete_lines(struct Editor *edp, struct Selection *selct);
@@ -55,9 +90,6 @@ insert_vert(struct Editor *edp, lchar_t ch);
 
 static void
 diffstk_insert_span(struct Editor *edp, lchar_t *str, int delta);
-
-static void
-line_insert(struct Line *line, int pos, lchar_t *cpy, int size);
 
 static void
 merge_lines(struct LineArr *doc, int pos);
@@ -80,11 +112,11 @@ move_up(struct Editor *edp);
 static int
 move_down(struct Editor *edp);
 
-static int
-find_prev_simil(const void *data, int cursor);
+static void
+open_win(struct Editor *edp);
 
-static int
-find_next_simil(const void *data, int cursor, int size);
+static void
+xinit_doc(struct Editor *edp, size_t sz, const char *fname);
 
 static int
 move_pgup(struct Editor *edp);
@@ -105,8 +137,8 @@ static void
 save_current(struct LineArr *doc, struct FileInfo *info,
 			 struct DiffStk *diffstk);
 
-static int
-usr_quit(struct Editor *edp);
+static void
+line_insert(struct Line *line, int pos, lchar_t *cpy, int size);
 
 static int
 move_to_word(struct Editor *edp, const lchar_t *str, long size);
@@ -126,8 +158,8 @@ exec_command(struct Editor *edp, lchar_t *str, int size);
 static void
 file_chooser(struct Editor *edp, enum FILE_ACT action);
 
-static int
-num_digits(int i, int base);
+static void
+xrealloc_ptr(void *p, size_t nmemb, size_t size, size_t head);
 
 static void
 regularize_selection(struct Selection *in, struct Selection *out);
@@ -142,8 +174,8 @@ iter_split(struct SplitIter *it, struct Range *delta);
 static void
 diffstk_reserve(struct DiffStk **diffstk);
 
-static filt_fn_t
-find_match_fil(lint_t ch);
+static void
+clear_window(struct Editor *edp);
 
 static void
 diffstk_incr(struct DiffStk *diffstk);
@@ -167,43 +199,17 @@ static void
 save_file_utf8(struct LineArr *doc, struct FileInfo *info,
 			   struct DiffStk *diffstk);
 
-static char *
-mkstr_nmt(const char *fmt, ...);
+static void
+calc_window_size(struct Editor *edp);
 
 static void
-xrealloc_ptr(void *p, size_t nmemb, size_t size, size_t head);
-
-static void
-init_docfile(struct Editor *edp, const char * fname);
-
-static char *
-u8str_convert(lchar_t *fname, int size);
+reposition_frame(struct Editor *edp);
 
 static void
 diffstk_free_all(struct DiffStk *ds);
 
-static void
-xinit_doc(struct Editor *edp, size_t sz, const char *fname);
-
 static int
 normalize_xcape(lchar_t in);
-
-static enum EFILE
-load_file_utf8(struct Editor *edp, const char *fname);
-
-static lchar_t
-denormalize_xcale(unsigned char in);
-
-static void
-open_win(struct Editor *edp);
-
-static int
-replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
-			 int size, lchar_t *nstr, int nsize);
-
-static lchar_t *
-render_back_max_given_width(struct Window *win, lchar_t *beg, lchar_t *end,
-							int width);
 
 static int
 move_down_natural(struct Editor *edp);
@@ -217,25 +223,25 @@ realloc_ptr(void *p, size_t nmemb, size_t size, size_t head);
 static int
 eq_bigch(struct Diff *diff, enum DIFF_TYPE small);
 
-static lchar_t *
-u32str_convert(const char *fname);
+static int
+replace_word(struct Editor *edp, struct Selection *selct, lchar_t *str,
+			 int size, lchar_t *nstr, int nsize);
 
 static void
 line_remove_span_qdiff(struct Editor *edp, struct Line *line, int pos,
 					   int delta);
 
-static struct Editor *
-init_editor(const char *fname);
+static void
+render_editor_info(struct Editor *edp);
 
-static int
-count_nlines_upto(struct Editor *edp, struct Line *line, int size);
+static void
+move_brush(struct Editor *edp, int y, int x);
 
 static int
 is_ascii(lchar_t *str, int size);
 
-static int
-replace_word_positrange(struct Editor *edp, struct Selection *selct,
-						lchar_t *str, int size, lchar_t *nstr, int nsize);
+static void
+render_lines(struct Editor *edp);
 
 static void
 insert_doc_nl_times(struct LineArr **doc, int pos, int size);
@@ -246,8 +252,18 @@ move_up_natural(struct Editor *edp);
 static void
 close_win(void);
 
-static int
-delete_lines_positrange(struct Editor *edp, struct Selection *selct);
+static void
+init_docfile(struct Editor *edp, const char * fname);
 
-enum IRET
-switch_editor(struct Editor *from, struct Editor *to); 
+static void
+diffstk_add_substk(struct Editor *edp, struct Editor *subp);
+
+static void
+insert_doc_copy(struct LineArr **doc, int pos, struct Line *cpy, int size);
+
+static void
+diffstk_insert_lines(struct Editor *edp, int pos, struct Line *cpy, int size);
+
+static void
+copy_action(struct Editor *edp);
+
