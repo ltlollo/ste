@@ -4,7 +4,7 @@ FILES 	= ste.c
 BIN	= ste
 
 all:
-	@gcc $(FILES) -O0 -g $(LIB) $(OCOM) -o $(BIN)
+	@gcc $(FILES) -Og -g $(LIB) $(OCOM) -o $(BIN)
 	@ctags -R .
 
 relese:
