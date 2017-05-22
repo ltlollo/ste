@@ -70,6 +70,11 @@
 			break;							\
 		}
 
+#ifdef PACK
+#define pack_struct __attribute__((packed))
+#else
+#define pack_struct
+#endif
 
 typedef wint_t lint_t;
 typedef wchar_t lchar_t;
@@ -103,16 +108,18 @@ struct Diff {
 		unsigned size : 29;
 		int y;
 		int x;
-	} __attribute__((packed));
+	} pack_struct;
 	union {
 		unsigned char content[SMALL_STR];
 		lchar_t *data;
 		struct DiffStk *diff_sub;
 		filt_fn_t fil;
-	} __attribute__((packed));
-} __attribute__((packed));
+	} pack_struct;
+} pack_struct;
 
+#ifdef PACK
 static_assert(sizeof(struct Diff) == 12 + SMALL_STR, "unsupported arch");
+#endif
 
 struct Line {
 	long size;
