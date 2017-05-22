@@ -142,8 +142,8 @@ enum EFILE {
 };
 
 enum DIREC {
-	DIREC_FORW,
-	DIREC_BACK,
+	DIREC_UNDO,
+	DIREC_REDO,
 };
 
 enum TERN {
@@ -632,7 +632,6 @@ handle_input(struct Editor *edp, lint_t c) {
 	const char *key;
 	enum IRET cont;
 	int mode;
-	int size;
 
 	assert(edp->cursy < edp->doc->size);
 	assert(edp->cursx <= line->size);
@@ -777,14 +776,14 @@ handle_input(struct Editor *edp, lint_t c) {
 		break;
 
 	case_key(18, "^R")
-		diffstk_apply_last(edp, DIREC_BACK);
+		diffstk_apply_last(edp, DIREC_REDO);
 		break;
 	case_key(21, "^U")
 		if (edp->mode == MODE_SELECT_HORIZ || edp->mode == MODE_SELECT_VERT ||
 			edp->mode == MODE_SEARCH) {
 			return IRET_UNDO;
 		}
-		diffstk_apply_last(edp, DIREC_FORW);
+		diffstk_apply_last(edp, DIREC_UNDO);
 		break;
 	case_key(19, "^S")
 		save_current(edp->doc, &edp->fileinfo, edp->diffstk);
@@ -926,7 +925,14 @@ handle_input(struct Editor *edp, lint_t c) {
 			return IRET_STOP;
 		}
 		break;
-
+	case_key(16, "^P")
+		if (edp->mode != MODE_NORMAL) {
+			break;
+		}
+		line = edp->paste->doc->data;
+		insert_doc_copy(&edp->doc, edp->cursy, line, edp->paste->doc->size);
+		diffstk_insert_lines(edp, edp->cursy, line, edp->paste->doc->size);
+		break;
 	}
 	edp->selct.yend = edp->cursy + 1;
 	return IRET_CONT;
@@ -1558,7 +1564,7 @@ diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
 	struct Diff *diff = edp->diffstk->data + edp->diffstk->curr - 1;
 	int delta;
 
-	if (direc == DIREC_FORW) {
+	if (direc == DIREC_UNDO) {
 		delta = -1;
 		diff = edp->diffstk->data + edp->diffstk->curr - 1;
 	} else {
@@ -1566,9 +1572,9 @@ diffstk_apply_last(struct Editor *edp, enum DIREC direc) {
 		diff = edp->diffstk->data + edp->diffstk->curr;
 	}
 
-	if (direc == DIREC_FORW && edp->diffstk->curr == 0) {
+	if (direc == DIREC_UNDO && edp->diffstk->curr == 0) {
 		return -1;
-	} else if (direc == DIREC_BACK &&
+	} else if (direc == DIREC_REDO &&
 			   edp->diffstk->curr == edp->diffstk->size) {
 		return -1;
 	}
@@ -1687,9 +1693,13 @@ delete_vert(struct Editor *edp, struct Selection *s) {
 		return -1;
 	}
 	if (selct.xend - selct.xbeg == 0) {
+		/* no selection */
 		for (i = selct.yend - 1; i != selct.ybeg - 1; i--) {
 			edp->cursy = i;
 			edp->cursx = min(selct.xend, edp->doc->data[edp->cursy].size);
+			if (edp->cursx == 0) {
+				continue;
+			}
 			if (i == selct.ybeg && selct.xbeg == 0) {
 				return 0;
 			}
@@ -1798,7 +1808,7 @@ edit_vert(struct Editor *edp) {
 	edp->diffstk = dsave;
 
 	if (cont == IRET_UNDO) {
-		diffstk_apply_last(edp, DIREC_FORW);
+		diffstk_apply_last(edp, DIREC_UNDO);
 	}
 	return 0;
 }
@@ -2075,7 +2085,7 @@ diff_apply_brk(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 	edp->cursx = diff->x;
 	edp->cursy = diff->y;
 	line = &edp->doc->data[edp->cursy];
-	if (((diff->type == DIFF_TYPE_ADDBRK) ^ (direc == DIREC_FORW)) == 0) {
+	if (((diff->type == DIFF_TYPE_ADDBRK) ^ (direc == DIREC_UNDO)) == 0) {
 		assert(edp->cursy >= 0);
 		for (i = 0; i < diff->size; i++) {
 			merge_lines(edp->doc, edp->cursy);
@@ -2098,14 +2108,16 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 	lchar_t *to;
 	lchar_t *end;
 	int i;
+	int isadd;
 
 	edp->cursx = diff->x;
 	edp->cursy = diff->y;
 	line = &edp->doc->data[edp->cursy];
 
-	if ((eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL) ^ (direc == DIREC_FORW))
-		== 0) {
-		if (direc == DIREC_FORW) {
+	isadd = eq_bigch(diff, DIFF_TYPE_ADDCHR_SMALL);
+
+	if ((isadd ^ (direc == DIREC_UNDO)) == 0) {
+		if (direc == DIREC_UNDO) {
 			to = line->data + edp->cursx;
 			beg = line->data + edp->cursx + diff->size;
 		} else {
@@ -2121,12 +2133,19 @@ diff_apply_chr(struct Editor *edp, struct Diff *diff, enum DIREC direc) {
 			xrealloc_owndata(line, line->alloc * 2 + diff->size);
 			line->alloc = line->alloc * 2 + diff->size;
 		}
-		beg = line->data + edp->cursx - diff->size;
-		end = line->data + line->size;
-
-		memmove(beg + diff->size, beg, (end - beg) * sizeof(*line->data));
+		if (isadd) {
+			to = line->data + edp->cursx + diff->size;
+			beg = line->data + edp->cursx;
+			end = line->data + line->size;
+		} else {
+			to = line->data + edp->cursx;
+			beg = line->data + edp->cursx - diff->size;
+			end = line->data + line->size;
+		}
+		memmove(to, beg, (end - beg) * sizeof(*line->data));
 		line->size += diff->size;
-		if (direc == DIREC_FORW) {
+		beg = line->data + edp->cursx - diff->size;
+		if (direc == DIREC_UNDO) {
 			if (diff->type <= DIFF_TYPE_INLINE) {
 				for (i = diff->size; i; i--) {
 					beg[diff->size - i] = diff->content[i - 1];
@@ -2160,7 +2179,7 @@ diffstk_apply_all(struct Editor *edp, struct DiffStk *ds, enum DIREC direc) {
 	if (ds->size == 0) {
 		return -1;
 	}
-	if (direc == DIREC_FORW) {
+	if (direc == DIREC_UNDO) {
 		delta = -1;
 		curr = ds->data + ds->size - 1;
 		end = ds->data - 1;
@@ -2424,6 +2443,7 @@ static void
 line_remove_span_qdiff(struct Editor *edp, struct Line *line, int pos,
 					   int delta) {
 	assert(delta);
+	assert(pos == edp->cursx);
 	diffstk_insert_span(edp, line->data + pos, delta);
 	line_remove_span(line, pos, delta);
 }
@@ -2684,7 +2704,7 @@ diffstk_insert_lines(struct Editor *edp, int pos, struct Line *cpy, int size) {
 		.diffstk = NULL,
 	};
 	struct Editor *subp = &sub;
-	struct Line own = { 0, 0, 0 };
+	struct Line *line;
 	int i;
 
 	if (edp->diffstk == NULL) {
@@ -2695,18 +2715,13 @@ diffstk_insert_lines(struct Editor *edp, int pos, struct Line *cpy, int size) {
 	subp->diffstk->alloc = INIT_SUBDIFF;
 
 	assert(pos < edp->doc->size);
-	edp->cursy = pos;
-	edp->cursx = 0;
+	subp->cursy = pos;
+	subp->cursx = 0;
 
 	for (i = 0; i < size; i++) {
-		diffstk_insert_addbk(edp, edp->cursy, edp->cursx);
-		insert_doc(&edp->doc, edp->cursy, &own, 1);
-		edp->cursx = 0;
-		edp->cursy++;
-	}
-	edp->cursy = pos;
-	for (i = 0; i < size; i++) {
-		diffstk_insert_span(subp, cpy[i].data, cpy[i].size);
+		line = &cpy[size - 1 - i];
+		diffstk_insert_addbk(subp, subp->cursy, subp->cursx);
+		diffstk_insert_span(subp, line->data, line->size);
 	}
 	diffstk_add_substk(edp, subp);
 }
