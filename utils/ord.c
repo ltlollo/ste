@@ -81,7 +81,7 @@ search_functions(const char *fname, struct Data *data) {
 				}
 				name_end = beg;
 				assert(beg >= data->text);
-				while (*beg != ' ' && *beg != '\n') {
+				while (*beg != ' ' && *beg != '\n' && *beg != '\t') {
 					assert(beg >= data->text);
 					beg--;
 				}
@@ -91,7 +91,7 @@ search_functions(const char *fname, struct Data *data) {
 					assert(beg >= data->text);
 					beg--;
 				}
-				if (beg[1] == ' ') {
+				if (beg[1] == ' ' || beg[1] == '\t') {
 					beg = ftxt_end + 1;
 					continue;
 				}
@@ -165,7 +165,7 @@ main() {
 	swap(ordered, i, 0);
 	i = 1;
 
-	for(curr_func  = ordered; curr_func != ordered + nfuncs; curr_func++) {
+	for(curr_func = ordered; curr_func != ordered + nfuncs; curr_func++) {
 		fwrite(curr_func->alltxt, 1, curr_func->alltxtsz, nfile);
 		fwrite(nl, 1, 2, nfile);
 		if (i == nfuncs || curr_func - ordered == nfuncs - 1) {
@@ -175,17 +175,22 @@ main() {
 			 call_end < curr_func->body + curr_func->bodysz; call_end++) {
 			if (*call_end == '(') {
 				call_beg = call_end;
-				while (*call_beg != ' ') {
+				while (*call_beg != ' ' && *call_beg != '\t') {
 					call_beg--;
 				}
 				call_beg++;
-				if (call_end - call_beg == 0) {
+				size = call_end - call_beg;
+				if (size == 0) {
+					continue;
+				}
+				if (memcmp(call_beg, curr_func->name, size < curr_func->namesz
+						   ? size: curr_func->namesz) == 0) {
 					continue;
 				}
 				for (to_ord = ordered;
 					 to_ord < ordered + nfuncs && to_ord < ordered + i;
 					 to_ord++) {
-					size = call_end - call_beg;
+
 					if (size != to_ord->namesz) {
 						continue;
 					}
@@ -196,7 +201,7 @@ main() {
 				if (to_ord != ordered + i) {
 					continue;
 				}
-				for (to_ord = ordered + i + 1; to_ord < ordered + nfuncs;
+				for (to_ord = ordered + i; to_ord < ordered + nfuncs;
 					 to_ord++) {
 					size = call_end - call_beg;
 					if (size != to_ord->namesz) {
