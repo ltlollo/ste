@@ -239,6 +239,7 @@ typedef struct Editor {
 	struct Editor *command;
 	struct Editor *files;
 	struct Editor *paste;
+	struct Editor *paren;
 	struct Selection selct;
 	struct DocFile *docs;
 } Editor;
@@ -312,6 +313,11 @@ init_editor(const char *fname) {
 	edp->files   = &files;
 	edp->paste	 = &paste;
 
+	edp->paren			= edp;
+	edp->search->paren	= edp;
+	edp->command->paren	= edp;
+	edp->files->paren	= edp;
+	edp->paste->paren	= edp;
 
 	line = &edp->files->doc->data[0];
 	if (fname == NULL || strlen(fname) == 0) {
@@ -621,15 +627,6 @@ reposition_cursor(struct Editor *edp) {
 	move_brush(edp, y, x);
 }
 
-void
-switch_docfile(struct DocFile *f, struct DocFile *s) {
-	struct DocFile tmp;
-
-	memcpy(&tmp, f, sizeof(*f));
-	memcpy(f, s, sizeof(*f));
-	memcpy(s, &tmp, sizeof(*f));
-}
-
 static enum IRET
 handle_input(struct Editor *edp, lint_t c) {
 	struct Line own = { 0, 0, 0 };
@@ -841,18 +838,7 @@ handle_input(struct Editor *edp, lint_t c) {
 		del_back(edp);
 		break;
 	case KEY_RESIZE:
-		erase();
-		edp->win.fullx = COLS;
-		edp->win.y = LINES;
-		if (edp->win.y > 1) {
-			edp->win.y--;
-		}
-		edp->win.pgspan = edp->win.y / 4 * 3;
-		calc_window_size(edp);
-		reposition_frame(edp);
-		render_lines(edp);
-		reposition_cursor(edp);
-		refresh();
+		resize_all(edp);
 		break;
 	case_key(39, "^?")
 		/* fix combination */
@@ -1031,6 +1017,37 @@ load_file_utf8(struct Editor *edp, const char *fname) {
 FAILREAD:
 	fclose(file);
 	return err;
+}
+
+static void
+resize_ed(struct Editor *edp) {
+	edp->win.fullx = COLS;
+	if (edp == edp->paren) {
+		edp->win.y = LINES;
+	}
+	if (edp->win.y > 1) {
+		edp->win.y--;
+	}
+	edp->win.pgspan = edp->win.y / 4 * 3;
+	calc_window_size(edp);
+	reposition_frame(edp);
+	render_lines(edp);
+	reposition_cursor(edp);
+}
+
+static void
+resize_all(struct Editor *edp) {
+	erase();
+	do {
+		edp = edp->paren;
+	} while (edp != edp->paren);
+
+	resize_ed(edp);
+    resize_ed(edp->search);
+    resize_ed(edp->command);
+    resize_ed(edp->files);
+    resize_ed(edp->paste);
+	refresh();
 }
 
 static lchar_t

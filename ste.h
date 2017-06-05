@@ -267,3 +267,8 @@ diffstk_insert_lines(struct Editor *edp, int pos, struct Line *cpy, int size);
 static void
 copy_action(struct Editor *edp);
 
+static void
+resize_all(struct Editor *edp);
+
+static void
+resize_ed(struct Editor *edp);
